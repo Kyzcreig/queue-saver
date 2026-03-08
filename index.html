@@ -476,7 +476,7 @@ async function saveQueueAndClear() {
     ).join('');
 
     setStatus('success',
-      `<span class="success">✅ Saved ${allSavedTracks.length} track${allSavedTracks.length !== 1 ? 's' : ''} to "${playlistName}"</span>` +
+      `<span class="success">✅ Saved ${allSavedTracks.length} track${allSavedTracks.length !== 1 ? 's' : ''} to <a href="https://open.spotify.com/playlist/${playlist.id}" target="_blank" style="color:#1DB954;">${playlistName}</a></span>` +
       (skipped > 0 ? `<br><span class="info">🧹 Skipped ${skipped} tracks from queue.</span>` : '') +
       `<div class="track-list">${trackList}</div>`
     );
