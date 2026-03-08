@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spotify Queue Saver</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #121212;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      background: #1e1e1e;
+      border-radius: 16px;
+      padding: 40px 36px;
+      max-width: 480px;
+      width: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .logo svg { flex-shrink: 0; }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .subtitle {
+      color: #aaa;
+      font-size: 0.95rem;
+      margin-bottom: 32px;
+      line-height: 1.5;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: #1DB954;
+      color: #000;
+      font-weight: 700;
+      font-size: 0.95rem;
+      border: none;
+      border-radius: 500px;
+      padding: 14px 28px;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      width: 100%;
+      letter-spacing: 0.3px;
+    }
+
+    .btn:hover { background: #1ed760; }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { background: #535353; color: #888; cursor: default; transform: none; }
+
+    .btn-secondary {
+      background: transparent;
+      color: #aaa;
+      border: 1px solid #333;
+      margin-top: 10px;
+      font-weight: 600;
+    }
+    .btn-secondary:hover { background: #2a2a2a; color: #fff; }
+
+    #status {
+      margin-top: 24px;
+      font-size: 0.9rem;
+      line-height: 1.6;
+      color: #aaa;
+      min-height: 20px;
+    }
+
+    #status .success { color: #1DB954; font-weight: 600; }
+    #status .error   { color: #e74c3c; }
+    #status .info    { color: #aaa; }
+
+    .track-list {
+      margin-top: 16px;
+      background: #121212;
+      border-radius: 8px;
+      padding: 12px 14px;
+      max-height: 200px;
+      overflow-y: auto;
+      font-size: 0.82rem;
+      color: #888;
+    }
+
+    .track-list .track {
+      padding: 4px 0;
+      border-bottom: 1px solid #1e1e1e;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .track-list .track:last-child { border-bottom: none; }
+
+    .now-playing {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #121212;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 20px;
+    }
+
+    .now-playing img {
+      width: 44px;
+      height: 44px;
+      border-radius: 4px;
+      object-fit: cover;
+    }
+
+    .now-playing .np-text { flex: 1; min-width: 0; }
+    .now-playing .np-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: #1DB954; font-weight: 700; }
+    .now-playing .np-track { font-size: 0.9rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .now-playing .np-artist { font-size: 0.78rem; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .pill {
+      display: inline-block;
+      background: #2a2a2a;
+      border-radius: 500px;
+      padding: 3px 10px;
+      font-size: 0.78rem;
+      color: #888;
+      margin-right: 6px;
+    }
+
+    .divider { border: none; border-top: 1px solid #2a2a2a; margin: 24px 0; }
+
+    /* Setup banner */
+    #setup-banner {
+      background: #2a1a00;
+      border: 1px solid #5a3a00;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 24px;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      color: #ffb347;
+    }
+    #setup-banner a { color: #ffb347; }
+    #setup-banner code {
+      background: #1a1000;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 0.82rem;
+    }
+    #client-id-form { margin-top: 10px; display: flex; gap: 8px; }
+    #client-id-input {
+      flex: 1;
+      background: #1a1000;
+      border: 1px solid #5a3a00;
+      color: #fff;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 0.85rem;
+    }
+    #client-id-input::placeholder { color: #666; }
+    #client-id-save {
+      background: #ffb347;
+      color: #000;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-weight: 700;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <svg width="32" height="32" viewBox="0 0 24 24" fill="#1DB954">
+      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.65 14.65c-.2.2-.51.27-.77.14-2.12-1.3-4.79-1.59-7.94-.87-.3.07-.6-.12-.67-.42-.07-.3.12-.6.42-.67 3.44-.79 6.4-.45 8.78 1.01.27.17.34.53.18.81zm1.24-2.77c-.25.25-.63.33-.96.18-2.43-1.49-6.13-1.92-9-1.05-.37.11-.76-.1-.87-.47-.11-.37.1-.76.47-.87 3.28-.99 7.35-.51 10.13 1.2.34.21.45.65.23.99v.02zm.11-2.89c-2.91-1.73-7.72-1.89-10.5-1.04-.45.14-.92-.12-1.06-.57-.14-.45.12-.92.57-1.06 3.2-.97 8.5-.78 11.85 1.21.4.24.53.75.29 1.15-.24.4-.75.53-1.15.29v.02z"/>
+    </svg>
+    <h1>Queue Saver</h1>
+  </div>
+
+  <div id="setup-banner" style="display:none">
+    ⚙️ <strong>Setup needed:</strong> Enter your Spotify app <a href="https://developer.spotify.com/dashboard" target="_blank">Client ID</a>. Make sure <code id="redirect-uri-display"></code> is in your app's Redirect URIs.
+    <div id="client-id-form">
+      <input id="client-id-input" type="text" placeholder="Paste Client ID here..." />
+      <button id="client-id-save">Save</button>
+    </div>
+  </div>
+
+  <p class="subtitle">Save your Spotify queue to a dated playlist, then clear it — so you can start fresh for a party or event.</p>
+
+  <div id="now-playing-area" style="display:none"></div>
+
+  <div id="main-actions">
+    <button class="btn" id="loginBtn">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.65 14.65c-.2.2-.51.27-.77.14-2.12-1.3-4.79-1.59-7.94-.87-.3.07-.6-.12-.67-.42-.07-.3.12-.6.42-.67 3.44-.79 6.4-.45 8.78 1.01.27.17.34.53.18.81zm1.24-2.77c-.25.25-.63.33-.96.18-2.43-1.49-6.13-1.92-9-1.05-.37.11-.76-.1-.87-.47-.11-.37.1-.76.47-.87 3.28-.99 7.35-.51 10.13 1.2.34.21.45.65.23.99v.02zm.11-2.89c-2.91-1.73-7.72-1.89-10.5-1.04-.45.14-.92-.12-1.06-.57-.14-.45.12-.92.57-1.06 3.2-.97 8.5-.78 11.85 1.21.4.24.53.75.29 1.15-.24.4-.75.53-1.15.29v.02z"/></svg>
+      Connect with Spotify
+    </button>
+  </div>
+
+  <div id="logged-in-actions" style="display:none">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <label style="font-size:0.88rem;color:#aaa;white-space:nowrap;">Save</label>
+      <input type="number" id="trackLimitInput" min="1" max="100" placeholder="10"
+        style="width:80px;background:#121212;border:1px solid #333;color:#fff;border-radius:6px;padding:7px 10px;font-size:0.88rem;text-align:center;" />
+      <label style="font-size:0.88rem;color:#aaa;">tracks (max: 100)</label>
+    </div>
+    <p style="font-size:0.75rem;color:#555;margin-bottom:14px;">Enter fewer than 20 to save a subset. Saving more than 20 skips through batches to reveal the rest.</p>
+    <button class="btn" id="saveBtn">
+      💾 Save Queue to Playlist
+    </button>
+    <label style="display:flex;align-items:center;gap:10px;margin-top:14px;cursor:pointer;font-size:0.9rem;color:#aaa;">
+      <input type="checkbox" id="clearQueueCheck" checked style="width:16px;height:16px;accent-color:#1DB954;cursor:pointer;" />
+      Clear queue after saving (auto-enabled for >20 tracks)
+    </label>
+    <button class="btn btn-secondary" id="logoutBtn" style="margin-top:14px;">Disconnect</button>
+  </div>
+
+  <div id="status"></div>
+</div>
+
+<script>
+// ─── CONFIG ──────────────────────────────────────────────────────────────────
+let CLIENT_ID = localStorage.getItem('qs_client_id') || '875a745cb6854eb1853010bf16264c20';
+const REDIRECT_URI = window.location.href.split('?')[0].split('#')[0];
+const SCOPES = [
+  'user-read-playback-state',
+  'user-modify-playback-state',
+  'playlist-modify-public',
+  'playlist-modify-private',
+  'user-read-currently-playing',
+  'user-read-private'
+].join(' ');
+
+// ─── DOM ─────────────────────────────────────────────────────────────────────
+const loginBtn    = document.getElementById('loginBtn');
+const saveBtn     = document.getElementById('saveBtn');
+const logoutBtn   = document.getElementById('logoutBtn');
+const statusEl    = document.getElementById('status');
+const mainActions = document.getElementById('main-actions');
+const loggedIn    = document.getElementById('logged-in-actions');
+const npArea      = document.getElementById('now-playing-area');
+const setupBanner = document.getElementById('setup-banner');
+const redirectDisplay = document.getElementById('redirect-uri-display');
+const clientIdInput = document.getElementById('client-id-input');
+const clientIdSave  = document.getElementById('client-id-save');
+
+// ─── PKCE HELPERS ────────────────────────────────────────────────────────────
+function randomBytes(len) {
+  return crypto.getRandomValues(new Uint8Array(len));
+}
+
+function base64url(buf) {
+  return btoa(String.fromCharCode(...buf))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+async function sha256(plain) {
+  const enc = new TextEncoder().encode(plain);
+  const hash = await crypto.subtle.digest('SHA-256', enc);
+  return new Uint8Array(hash);
+}
+
+async function pkce() {
+  const verifier = base64url(randomBytes(48));
+  const challenge = base64url(await sha256(verifier));
+  return { verifier, challenge };
+}
+
+// ─── AUTH ────────────────────────────────────────────────────────────────────
+async function login() {
+  if (!CLIENT_ID) { setStatus('error', 'No Client ID set. Fill in setup above.'); return; }
+  const { verifier, challenge } = await pkce();
+  const state = base64url(randomBytes(16));
+  localStorage.setItem('qs_verifier', verifier);
+  localStorage.setItem('qs_state', state);
+
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: REDIRECT_URI,
+    code_challenge_method: 'S256',
+    code_challenge: challenge,
+    state,
+    scope: SCOPES,
+    show_dialog: 'true'
+  });
+  window.location = 'https://accounts.spotify.com/authorize?' + params;
+}
+
+async function exchangeCode(code) {
+  const verifier = localStorage.getItem('qs_verifier');
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: REDIRECT_URI,
+      client_id: CLIENT_ID,
+      code_verifier: verifier
+    })
+  });
+  const data = await res.json();
+  if (data.access_token) {
+    localStorage.setItem('qs_access_token', data.access_token);
+    localStorage.setItem('qs_refresh_token', data.refresh_token);
+    localStorage.setItem('qs_expires_at', Date.now() + data.expires_in * 1000);
+    localStorage.removeItem('qs_verifier');
+    localStorage.removeItem('qs_state');
+  }
+  return data;
+}
+
+async function refreshAccessToken() {
+  const refresh = localStorage.getItem('qs_refresh_token');
+  if (!refresh) return null;
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refresh,
+      client_id: CLIENT_ID
+    })
+  });
+  const data = await res.json();
+  if (data.access_token) {
+    localStorage.setItem('qs_access_token', data.access_token);
+    localStorage.setItem('qs_expires_at', Date.now() + data.expires_in * 1000);
+    if (data.refresh_token) localStorage.setItem('qs_refresh_token', data.refresh_token);
+  }
+  return data.access_token;
+}
+
+async function getToken() {
+  const expires = parseInt(localStorage.getItem('qs_expires_at') || '0');
+  if (Date.now() > expires - 60000) {
+    return await refreshAccessToken();
+  }
+  return localStorage.getItem('qs_access_token');
+}
+
+function isLoggedIn() {
+  return !!(localStorage.getItem('qs_access_token') && localStorage.getItem('qs_refresh_token'));
+}
+
+function logout() {
+  ['qs_access_token','qs_refresh_token','qs_expires_at','qs_verifier','qs_state'].forEach(k => localStorage.removeItem(k));
+  showLoggedOut();
+  setStatus('info', 'Disconnected.');
+}
+
+// ─── SPOTIFY API ─────────────────────────────────────────────────────────────
+async function api(path, method = 'GET', body = null) {
+  const token = await getToken();
+  const opts = {
+    method,
+    headers: { 'Authorization': 'Bearer ' + token }
+  };
+  if (body !== null) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch('https://api.spotify.com/v1' + path, opts);
+  if (res.status === 204 || res.status === 202) return null;
+  const text = await res.text();
+  const json = text ? (() => { try { return JSON.parse(text); } catch { return null; } })() : null;
+  if (!res.ok) {
+    console.error('Spotify API error:', method, path, res.status, text);
+    throw new Error(`[${method} ${path}] HTTP ${res.status}: ${json?.error?.message || text}`);
+  }
+  return json;
+}
+
+// ─── MAIN ACTION ─────────────────────────────────────────────────────────────
+async function saveQueueAndClear() {
+  saveBtn.disabled = true;
+  try {
+    const totalToSave = Math.min(100, Math.max(1, parseInt(document.getElementById('trackLimitInput').value) || 10));
+    const shouldClear = document.getElementById('clearQueueCheck').checked;
+    const isMultiBatch = totalToSave > 20;
+    const maxBatches = Math.ceil(totalToSave / 20);
+
+    // 1. Create playlist
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const dateStr = `${now.getFullYear()}/${pad(now.getMonth()+1)}/${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const playlistName = `Queue Playlist ${dateStr}`;
+
+    setStatus('info', `📁 Creating playlist "${playlistName}"...`);
+    const playlist = await api('/me/playlists', 'POST', {
+      name: playlistName,
+      description: `Saved from Spotify Queue on ${dateStr}`,
+      public: false
+    });
+    await new Promise(r => setTimeout(r, 1000));
+
+    // 2. Multi-batch fetch → save → skip loop
+    // Each batch: save [currentTrack + up to 19 queue items], skip queue items to expose next batch
+    // After N skips, old queue[N] becomes the new currentTrack for the next batch
+    const allSavedTracks = [];
+
+    for (let batch = 0; batch < maxBatches; batch++) {
+      const isLastBatch = batch === maxBatches - 1;
+      const remaining = totalToSave - allSavedTracks.length;
+      const batchSize = Math.min(20, remaining);
+
+      setStatus('info', isMultiBatch
+        ? `📋 Batch ${batch + 1}/${maxBatches} — ${allSavedTracks.length}/${totalToSave} saved...`
+        : '📋 Fetching queue...');
+
+      const playback = await api('/me/player');
+      const queueData = await api('/me/player/queue');
+      const currentTrack = playback?.item;
+      const queuedTracks = queueData?.queue || [];
+
+      if (!currentTrack && queuedTracks.length === 0) break;
+
+      // current + (batchSize-1) queue items = batchSize total
+      const batchQueue = queuedTracks.slice(0, Math.max(0, batchSize - 1));
+      const batchTracks = currentTrack ? [currentTrack, ...batchQueue] : batchQueue;
+
+      if (batchTracks.length === 0) break;
+
+      const uris = [...new Set(batchTracks.map(t => t.uri).filter(u => u?.startsWith('spotify:track:')))];
+      if (uris.length > 0) {
+        await api(`/playlists/${playlist.id}/items`, 'POST', { uris });
+        allSavedTracks.push(...batchTracks);
+      }
+
+      // Skip queue items to expose next batch
+      // Intermediate batches: always skip (required to get next batch)
+      // Last batch: skip only if shouldClear is checked
+      const skipQueue = !isLastBatch || shouldClear;
+      if (skipQueue && batchQueue.length > 0) {
+        for (let s = 0; s < batchQueue.length; s++) {
+          await api('/me/player/next', 'POST', null);
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+
+      if (!isLastBatch) await new Promise(r => setTimeout(r, 800));
+    }
+
+    if (allSavedTracks.length === 0) {
+      setStatus('error', 'Nothing in your queue right now.');
+      saveBtn.disabled = false;
+      return;
+    }
+
+    // 3. Show result
+    const skipped = isMultiBatch
+      ? allSavedTracks.length - 1
+      : (shouldClear ? allSavedTracks.length - 1 : 0);
+
+    const trackList = allSavedTracks.map(t =>
+      `<div class="track">🎵 ${t.artists?.[0]?.name ? t.artists[0].name + ' — ' : ''}${t.name}</div>`
+    ).join('');
+
+    setStatus('success',
+      `<span class="success">✅ Saved ${allSavedTracks.length} track${allSavedTracks.length !== 1 ? 's' : ''} to "${playlistName}"</span>` +
+      (skipped > 0 ? `<br><span class="info">🧹 Skipped ${skipped} tracks from queue.</span>` : '') +
+      `<div class="track-list">${trackList}</div>`
+    );
+
+    await showNowPlaying();
+
+  } catch (err) {
+    setStatus('error', '❌ Error: ' + err.message);
+  } finally {
+    saveBtn.disabled = false;
+  }
+}
+
+// ─── UI HELPERS ──────────────────────────────────────────────────────────────
+function setStatus(type, html) {
+  statusEl.innerHTML = `<span class="${type}">${html}</span>`;
+}
+
+function showLoggedIn() {
+  mainActions.style.display = 'none';
+  loggedIn.style.display = 'block';
+}
+
+function showLoggedOut() {
+  mainActions.style.display = 'block';
+  loggedIn.style.display = 'none';
+  npArea.style.display = 'none';
+}
+
+async function showNowPlaying() {
+  try {
+    const pb = await api('/me/player/currently-playing');
+    if (!pb?.item) { npArea.style.display = 'none'; return; }
+    const t = pb.item;
+    const img = t.album?.images?.[2]?.url || t.album?.images?.[0]?.url || '';
+    npArea.innerHTML = `
+      <div class="now-playing">
+        ${img ? `<img src="${img}" alt="album art" />` : ''}
+        <div class="np-text">
+          <div class="np-label">Now Playing</div>
+          <div class="np-track">${t.name}</div>
+          <div class="np-artist">${t.artists?.map(a => a.name).join(', ')}</div>
+        </div>
+      </div>`;
+    npArea.style.display = 'block';
+  } catch { npArea.style.display = 'none'; }
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+async function init() {
+  redirectDisplay.textContent = REDIRECT_URI;
+
+  // Setup banner
+  if (!CLIENT_ID) {
+    setupBanner.style.display = 'block';
+    clientIdInput.value = '';
+  }
+
+  clientIdSave.addEventListener('click', () => {
+    const val = clientIdInput.value.trim();
+    if (!val) return;
+    CLIENT_ID = val;
+    localStorage.setItem('qs_client_id', val);
+    setupBanner.style.display = 'none';
+    setStatus('success', '✅ Client ID saved. Connect with Spotify below.');
+  });
+
+  loginBtn.addEventListener('click', login);
+  saveBtn.addEventListener('click', saveQueueAndClear);
+  logoutBtn.addEventListener('click', logout);
+
+  // Handle OAuth callback
+  const params = new URLSearchParams(window.location.search);
+  const code  = params.get('code');
+  const state = params.get('state');
+  const error = params.get('error');
+
+  if (error) {
+    setStatus('error', 'Spotify auth error: ' + error);
+    window.history.replaceState({}, '', window.location.pathname);
+    return;
+  }
+
+  if (code && state && state === localStorage.getItem('qs_state')) {
+    setStatus('info', '🔄 Finishing login...');
+    window.history.replaceState({}, '', window.location.pathname);
+    const result = await exchangeCode(code);
+    if (result.access_token) {
+      showLoggedIn();
+      setStatus('success', '✅ Connected! Hit the button whenever you want to save your queue.');
+      await showNowPlaying();
+    } else {
+      setStatus('error', '❌ Auth failed: ' + (result.error_description || result.error));
+    }
+    return;
+  }
+
+  if (isLoggedIn()) {
+    showLoggedIn();
+    await showNowPlaying();
+  }
+}
+
+init();
+</script>
+</body>
+</html>
