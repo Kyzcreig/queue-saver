@@ -1,93 +1,53 @@
-# Queue Saver
+# Queue Saver v2
 
-Saves your Spotify queue to a dated playlist, then clears it — so you can start fresh for a party or event.
+Park your Spotify listening, host a party on other music, and pick your own listening back up
+afterwards, without skipping a single song.
 
-Single-file HTML app. No server, no build step, no dependencies.
+A small command line tool on the Mac Studio, built on [`spotapi`](https://github.com/Aran404/SpotAPI)
+2.1.0 (Spotify web player private endpoints, pinned dependency, never vendored). Spec:
+[`docs/SPEC-queue-saver-v2.md`](docs/SPEC-queue-saver-v2.md).
 
----
+## Verbs
 
-## What It Does
-
-1. **Reads your current Spotify queue** (up to 200 tracks)
-2. **Creates a private playlist** named `Queue Playlist YYYY/MM/DD HH:MM:SS`
-3. **Adds all queued tracks** to the playlist
-4. **Optionally clears your queue** (can skip the clear if you just want a snapshot)
-
-Handles queues >20 tracks by using a skip-batch technique to expose tracks Spotify's API hides behind the 20-item queue window.
-
----
-
-## Setup
-
-### 1. Create a Spotify App
-
-1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
-2. Click **Create app**
-3. Set **Redirect URI** to the URL where you're serving the file (e.g. `http://127.0.0.1:5500/index.html` for Live Server, or `file:///Users/you/.../queue-saver/index.html` if opening locally)
-4. Copy your **Client ID**
-
-### 2. Configure Client ID
-
-The app ships with a hardcoded default Client ID. To use your own:
-
-- Open the app in your browser
-- If the setup banner appears (no Client ID in localStorage), paste your Client ID and click **Save**
-- Or edit the fallback in `index.html`:
-  ```js
-  let CLIENT_ID = localStorage.getItem('qs_client_id') || 'your-client-id-here';
-  ```
-
-The Client ID is persisted in `localStorage` — you only need to enter it once per browser.
-
----
-
-## Usage
-
-1. Open `index.html` in a browser (or serve it locally)
-2. Click **Connect with Spotify** — authorizes via PKCE OAuth (no secret needed)
-3. Set how many tracks to save (default: 10, max: 200)
-4. Toggle **Clear queue after saving** if you want a clean slate
-5. Click **Save Queue to Playlist**
-
-The playlist link appears in the status area when done.
-
----
-
-## Serving Locally
-
-Any static file server works. Quickest options:
-
-```bash
-# Python
-python3 -m http.server 5500
-
-# Node
-npx serve .
-
-# VS Code Live Server extension
-# Right-click index.html → "Open with Live Server"
+```
+queue-saver probe [--seed N]          # device, context, upcoming counts by provider (queue/context)
+queue-saver park [--queued-only]      # snapshot -> private playlist -> read back -> remove queued songs
+queue-saver restore [SNAPSHOT] [--device NAME]
+queue-saver list                      # parked states
 ```
 
-The redirect URI in your Spotify app must match exactly — including the port.
+- `park` never touches playback (no next, previous, pause, play or seek). It writes the snapshot
+  file first, creates a private playlist (current song + everything upcoming, in play order;
+  `--queued-only` keeps only songs you queued), reads the playlist back, and only then removes the
+  queued songs it saved, in one `set_queue`.
+- `restore` plays the saved context at the saved song and position on the ACTIVE device, then puts
+  the queued songs back in order. With no active device it lists devices and exits 3 unless
+  `--device NAME` is given. If the context no longer exists it restores the song and the queued
+  songs and says so.
+- Snapshots: `~/.hermes/var/queue-saver/snapshots/<timestamp>.json` (override with `QS_STATE_DIR`).
 
----
+Exit codes: 0 ok, 1 check failed (e.g. read-back mismatch), 2 a named stage failed (any spotapi
+error or a state missing a field), 3 no active device, 4 spotapi version is not the pin.
 
-## OAuth Scopes Used
+## Login
 
-| Scope | Why |
-|---|---|
-| `user-read-playback-state` | Check current playback |
-| `user-modify-playback-state` | Skip tracks to expose the next queue batch |
-| `playlist-modify-public` | Create playlists |
-| `playlist-modify-private` | Create private playlists |
-| `user-read-currently-playing` | Show now-playing widget |
-| `user-read-private` | Get user ID for playlist creation |
+The tool needs the `sp_dc` cookie of the Spotify web session. It reads it at run time through the
+fleet's cached 1Password reader (`op-cached-read`), from the AI vault item
+"Spotify web session sp_dc" (`QS_OP_REF` overrides the reference). The value lives only in process
+memory: never in the repo, argv, logs, stdout or snapshot files. On a 401 it re-reads 1Password once.
+To reseed after the cookie expires, read `sp_dc` for open.spotify.com from the fleet browser identity
+`id-spotify-kyzcreig` over a read lease and update the item.
 
----
+## Setup and tests
 
-## Notes
+```
+uv sync                # Python 3.12 venv, spotapi==2.1.0 from its wheel (uv.lock committed)
+uv run pytest -q       # offline, against recorded-shape state fixtures
+uv run queue-saver probe
+```
 
-- Spotify's queue API only returns the **next 20 items**. For >20 tracks, the app skips through the queue in batches to reveal the rest — this modifies playback state.
-- The "Clear queue" checkbox is auto-forced on when saving >20 tracks (skipping is required to access deeper items).
-- Tokens are stored in `localStorage`. Disconnect via the **Disconnect** button to clear them.
-- No data leaves your browser except Spotify API calls.
+Using the private API is against Spotify's terms; the tool makes a handful of calls per run, only
+when asked. When Spotify changes its web player, bump the pin, rerun `probe` and the tests.
+
+v1 (the single `index.html` on the official Web API, 20-item window) was removed in v2; `git revert`
+of that commit brings it back.
