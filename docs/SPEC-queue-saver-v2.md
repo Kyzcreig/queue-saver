@@ -52,7 +52,7 @@ measured yet. Phase 0 measures it.
 - RULED 2026-11-20 (Ace): rebuild on SpotAPI. Scope is this tool only.
 - DECIDED 2026-11-20 (Apollo): command line tool, driven by Apollo in chat ("park my queue"). Reason: Ace talks to Apollo already; a page is a second surface to keep alive.
 - DECIDED 2026-11-20 (Apollo): the playlist holds the current song plus everything upcoming, in play order (the superset, and what v1 did). `--queued-only` narrows it. The snapshot file records which songs were queued and which came from the context, so restore is exact either way.
-- DECIDED 2026-11-20 (Apollo): the repo stays `Kyzcreig/queue-saver` (public) and takes a GPL-3.0 licence, because the tool imports a GPL library. No secret lives in the repo.
+- DECIDED 2026-11-20 (Apollo): the repo moves to `ANG-Ventures/queue-saver` (private) before v2 lands on the default branch. Measured: no fleet GitHub lane can push to or open a PR on `Kyzcreig/queue-saver`, and the trunk-push guard refuses a direct push. Until the move, work lives on branches of the current repo. A private repo that is never distributed needs no licence change; `LICENSE` is dropped from Phase 1.
 - DECIDED 2026-11-20 (Apollo): v1 `index.html` is deleted in Phase 1. Rebuild check: a rebuild today would keep the dated private playlist and the link in the output; the skip loop, the browser OAuth page and the track-count box exist only because of the official API's 20-item window.
 - scouted: `spotapi` 2.1.0, adopt as a pinned dependency. scouted: official Web API, skip (20-item window, measured in v1). scouted: `spotipy`, skip (same API).
 
@@ -84,7 +84,7 @@ committed. The tool asserts the installed version equals the pin at start.
   - *Negative:* no active device prints the device list and exits 3 without changing anything.
   - *Verify with:* `queue-saver probe --seed 25` ends `seeded 25, visible >=25, restored: yes`.
   - If no Spotify session is active when the worker reaches this phase, the worker does not start one. It finishes Phases 1 to 3 against recorded fixtures and hands back with the live checks listed as not run.
-- **Phase 1, subtract.** Delete `index.html`; rewrite `README.md` for v2; add `LICENSE` (GPL-3.0).
+- **Phase 1, subtract.** Delete `index.html`; rewrite `README.md` for v2.
   - *Verify with:* `git ls-files` shows no `index.html`.
 - **Phase 2, park and list.**
   - *Unit check:* snapshot round-trips through JSON; playlist item order equals current song then `upcoming` order; `--queued-only` keeps only `provider == "queue"`.
