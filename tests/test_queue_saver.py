@@ -243,3 +243,23 @@ def test_list_shows_parked_states():
 
 def test_spotapi_version_is_pinned():
     assert installed_spotapi() == PINNED_SPOTAPI == "2.1.0"
+
+
+def test_login_failure_reseeds_from_container_and_retries_once(monkeypatch):
+    from spotapi.types.exceptions import HTTPError
+
+    calls = {"reseed": 0, "fresh": [], "built": 0}
+    monkeypatch.setattr(cli, "reseed_from_container", lambda: calls.__setitem__("reseed", calls["reseed"] + 1) or True)
+    monkeypatch.setattr(cli, "read_sp_dc", lambda fresh=False: calls["fresh"].append(fresh) or FAKE_COOKIE)
+    good = FakeBackend(load_cluster("no_active.json"))
+
+    def factory(header):
+        calls["built"] += 1
+        if calls["built"] == 1:
+            return FakeBackend(load_cluster("no_active.json"), error=HTTPError("401", status_code=401))
+        return good
+
+    lines = []
+    rc = cli.main(["probe"], factory=factory, out=lines.append)
+    assert rc == 3  # second attempt reached the account (nothing active)
+    assert calls == {"reseed": 1, "fresh": [False, True], "built": 2}

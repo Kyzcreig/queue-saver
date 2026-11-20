@@ -61,3 +61,24 @@ def scrub(text: str, secret: str | None) -> str:
     if secret and secret in text:
         return text.replace(secret, "<redacted>")
     return text
+
+
+IDENTITY = "id-spotify-kyzcreig"
+FORWARDER = os.path.expanduser("~/.hermes/scripts/browsers/lease-cdp-forward.py")
+RESEED_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "reseed_sp_dc.py")
+
+
+def reseed_from_container(timeout: int = 240) -> bool:
+    """Read sp_dc from the fleet browser identity over a read lease and update 1Password.
+
+    Never logs in. Returns True when the item was updated.
+    """
+    py = os.environ.get("QS_RESEED_PYTHON", "/opt/homebrew/bin/python3")  # needs websockets
+    argv = ["browserctl", "with", IDENTITY, "--class", "read", "--ttl", "300", "--",
+            "/usr/bin/python3", FORWARDER, "--", py, os.path.abspath(RESEED_SCRIPT)]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0

@@ -46,6 +46,7 @@ class SpotifyBackend:
         self.player: Any = None
         self.client: Any = None
         self.raw: Mapping[str, Any] = {}
+        self._ph: Any = None
 
     async def __aenter__(self) -> "SpotifyBackend":
         from spotapi import AsyncClient, Player
@@ -116,41 +117,65 @@ class SpotifyBackend:
             pass
 
     # ---- playlists -------------------------------------------------------------
-    async def create_playlist(self, name: str) -> str:
-        from spotapi import PlaylistHandler
+    async def _handler(self) -> Any:
+        """A PlaylistHandler whose username is known BEFORE any playlist is created.
 
+        spotapi 2.1.0 resolves the username lazily inside create_playlist, after the playlist
+        already exists; on Ace's account its Profile model rejects the live response
+        ("Profile.avatar: value does not match str | None"), which strands an orphan playlist
+        outside the library. So resolve the username first, from the raw query if needed.
+        """
+        from spotapi import PlaylistHandler
+        from spotapi.operations import Operations
+        from spotapi.types.exceptions import BaseClientError
+
+        if self._ph is not None:
+            return self._ph
+        h = PlaylistHandler(self.client)
+        try:
+            await h._get_username()
+        except BaseClientError:
+            resp = await h.qc.pathfinder_query({}, Operations.PROFILE_ATTRIBUTES)
+            me = resp.get("me") or {}
+            prof = me.get("profile") if hasattr(me, "get") else None
+            user = prof.get("username") if hasattr(prof, "get") else None
+            if not isinstance(user, str) or not user:
+                raise
+            h._username = user
+        self._ph = h
+        return h
+
+    async def _playlist(self, uri: str) -> Any:
+        from spotapi import Playlist
+
+        return Playlist(self.client, uri, handler=await self._handler())
+
+    async def create_playlist(self, name: str) -> str:
         self.log.append("create_playlist")
-        pl = await PlaylistHandler(self.client).create_playlist(name)
+        h = await self._handler()
+        pl = await h.create_playlist(name)
         return pl.playlist_id
 
     async def set_private(self, uri: str) -> None:
-        from spotapi import Playlist
-
         self.log.append("set_private")
-        await Playlist(self.client, uri).set_published(False)
+        await (await self._playlist(uri)).set_published(False)
 
     async def add_tracks(self, uri: str, uris: Sequence[str]) -> None:
-        from spotapi import Playlist
-
         self.log.append("add_tracks")
-        pl = Playlist(self.client, uri)
+        pl = await self._playlist(uri)
         for i in range(0, len(uris), 100):
             await pl.add_tracks(*uris[i : i + 100])
 
     async def playlist_uris(self, uri: str) -> list[str]:
-        from spotapi import Playlist
-
         self.log.append("playlist_uris")
         out: list[str] = []
-        async for entry in Playlist(self.client, uri).items():
+        async for entry in (await self._playlist(uri)).items():
             out.append(entry.uri or "")
         return out
 
     async def delete_playlist(self, uri: str) -> None:
-        from spotapi import Playlist
-
         self.log.append("delete_playlist")
-        await Playlist(self.client, uri).delete()
+        await (await self._playlist(uri)).delete()
 
 
 async def settle(seconds: float = 0.6) -> None:

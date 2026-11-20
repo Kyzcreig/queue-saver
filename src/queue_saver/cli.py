@@ -8,7 +8,7 @@ import sys
 from typing import Any, Callable
 
 from . import ops
-from .session import CookieError, cookie_header, read_sp_dc, scrub
+from .session import CookieError, cookie_header, read_sp_dc, reseed_from_container, scrub
 from .spotify import SpotifyBackend, assert_pinned
 
 BackendFactory = Callable[[str], Any]
@@ -48,7 +48,9 @@ async def _run(args: argparse.Namespace, out: Callable[[str], None], factory: Ba
     except Exception as e:
         if not _is_login_failure(e):
             raise
-        out("login rejected; re-reading the cookie from 1Password once")
+        out("login rejected; reseeding the cookie from the browser container and retrying once")
+        if not reseed_from_container():
+            out("reseed did not update the cookie; retrying with a fresh 1Password read")
         backend = factory(cookie(fresh=True))
         async with backend as sp:
             return await _dispatch(args, sp, out, version)
