@@ -1,0 +1,112 @@
+{
+ "timestamp": 1795200000000,
+ "active_device_id": "dev-living",
+ "devices": {
+  "dev-living": {
+   "name": "Living Room",
+   "device_type": "SPEAKER",
+   "can_play": true
+  },
+  "dev-mac": {
+   "name": "dell-rugged",
+   "device_type": "COMPUTER",
+   "can_play": true
+  }
+ },
+ "player_state": {
+  "timestamp": 1795200000000,
+  "context_uri": "spotify:album:ALBUM0000000000000000001",
+  "is_playing": true,
+  "is_paused": false,
+  "position_as_of_timestamp": 61000,
+  "duration": 240000,
+  "playback_speed": 1.0,
+  "track": {
+   "uri": "spotify:track:T000000000000000000001",
+   "uid": "uid1c",
+   "provider": "context",
+   "metadata": {
+    "title": "Now Playing",
+    "artist_name": "Artist 1"
+   }
+  },
+  "options": {
+   "shuffling_context": false,
+   "repeating_context": false,
+   "repeating_track": false
+  },
+  "queue_revision": "rev1",
+  "prev_tracks": [
+   {
+    "uri": "spotify:track:T000000000000000000000",
+    "uid": "uid0c",
+    "provider": "context",
+    "metadata": {
+     "title": "Song 0",
+     "artist_name": "Artist 0"
+    }
+   }
+  ],
+  "next_tracks": [
+   {
+    "uri": "spotify:track:T000000000000000000101",
+    "uid": "uid101q",
+    "provider": "queue",
+    "metadata": {
+     "title": "Song 101",
+     "artist_name": "Artist 101"
+    }
+   },
+   {
+    "uri": "spotify:track:T000000000000000000102",
+    "uid": "uid102q",
+    "provider": "queue",
+    "metadata": {
+     "title": "Song 102",
+     "artist_name": "Artist 102"
+    }
+   },
+   {
+    "uri": "spotify:track:T000000000000000000103",
+    "uid": "uid103q",
+    "provider": "queue",
+    "metadata": {
+     "title": "Song 103",
+     "artist_name": "Artist 103"
+    }
+   },
+   {
+    "uri": "spotify:track:T000000000000000000002",
+    "uid": "uid2c",
+    "provider": "context",
+    "metadata": {
+     "title": "Song 2",
+     "artist_name": "Artist 2"
+    }
+   },
+   {
+    "uri": "spotify:track:T000000000000000000003",
+    "uid": "uid3c",
+    "provider": "context",
+    "metadata": {
+     "title": "Song 3",
+     "artist_name": "Artist 3"
+    }
+   },
+   {
+    "uri": "spotify:track:T000000000000000000004",
+    "uid": "uid4c",
+    "provider": "context",
+    "metadata": {
+     "title": "Song 4",
+     "artist_name": "Artist 4"
+    }
+   },
+   {
+    "uri": "spotify:delimiter",
+    "uid": "delim",
+    "provider": "context"
+   }
+  ]
+ }
+}
