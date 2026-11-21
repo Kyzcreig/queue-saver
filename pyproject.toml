@@ -1,0 +1,32 @@
+[project]
+name = "queue-saver"
+version = "2.0.0"
+description = "Park and restore the Spotify queue without skipping (spotapi based)."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "spotapi==2.1.0",
+]
+
+[project.scripts]
+queue-saver = "queue_saver.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.uv]
+# spotapi must come from its wheel, never an sdist build.
+no-build-package = ["spotapi"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/queue_saver"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--basetemp=.pytest-tmp -p no:cacheprovider"

@@ -1,0 +1,23 @@
+{
+ "timestamp": 1795200000000,
+ "devices": {
+  "dev-living": {
+   "name": "Living Room",
+   "device_type": "SPEAKER",
+   "can_play": true
+  },
+  "dev-mac": {
+   "name": "dell-rugged",
+   "device_type": "COMPUTER",
+   "can_play": true
+  }
+ },
+ "player_state": {
+  "timestamp": 1795200000000,
+  "options": {},
+  "is_paused": true,
+  "next_tracks": [],
+  "prev_tracks": [],
+  "track": {}
+ }
+}
