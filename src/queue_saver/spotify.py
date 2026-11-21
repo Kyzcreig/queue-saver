@@ -39,6 +39,10 @@ def assert_pinned() -> str:
 class SpotifyBackend:
     """Live backend over spotapi. Use as ``async with SpotifyBackend(cookie) as sp``."""
 
+    # Most queued entries a state read is known to show in full. None: unknown (spotapi 2.1.0
+    # says nothing about truncation of next_tracks), so park never clears by replacement.
+    queue_cap: int | None = None
+
     def __init__(self, cookie_header: str) -> None:
         self._cookie = cookie_header
         self._stack = AsyncExitStack()

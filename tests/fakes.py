@@ -20,7 +20,7 @@ def load_cluster(name: str) -> dict:
 
 class FakeBackend:
     def __init__(self, cluster: dict, *, contexts: dict[str, list[str]] | None = None,
-                 queue_cap: int | None = None, short_readback: bool = False,
+                 queue_cap: int | None = 1000, short_readback: bool = False,
                  missing_contexts: set[str] = frozenset(), error: Exception | None = None) -> None:
         self.cluster = copy.deepcopy(cluster)
         self.contexts = contexts or {}

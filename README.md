@@ -19,9 +19,11 @@ queue-saver list                      # parked states
 - `park` never touches playback (no next, previous, pause, play or seek). It writes the snapshot
   file first, creates a private playlist (current song + everything upcoming, in play order;
   `--queued-only` keeps only songs you queued), reads the playlist back, and only then removes the
-  queued songs it saved, in one `set_queue`.
+  queued songs it saved, in one `set_queue`. `set_queue` replaces the whole queue, so park removes
+  nothing (exit 1, snapshot and playlist kept) unless the visible queue is shorter than a known read
+  cap. The live backend's cap is unknown, so on spotapi 2.1.0 park saves but does not clear.
 - `restore` plays the saved context at the saved song and position on the ACTIVE device, then puts
-  the queued songs back in order. With no active device it lists devices and exits 3 unless
+  the queued songs back in order, first; songs queued since the park stay, after them. With no active device it lists devices and exits 3 unless
   `--device NAME` is given. If the context no longer exists it restores the song and the queued
   songs and says so.
 - Snapshots: `~/.hermes/var/queue-saver/snapshots/<timestamp>.json` (override with `QS_STATE_DIR`).

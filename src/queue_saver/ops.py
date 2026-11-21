@@ -184,6 +184,14 @@ async def park(sp: Any, out: Out, *, version: str, queued_only: bool = False,
     unparked = [i for i in snap.queued if i.uid not in parked_uids]
     raw, st = await read_state(sp)
     keep = [t for t in st.next_tracks if not (t.provider == "queue" and t.uid in parked_uids)]
+    # set_queue replaces the WHOLE queue, so an entry hidden past the read cap would be deleted
+    # unsaved. Clear only when the visible queue is shorter than a known cap.
+    cap = sp.queue_cap
+    if len(keep) != len(st.next_tracks) and (cap is None or len(queued(st)) >= cap):
+        out(f"clear queued: nothing removed; the queue may be longer than what Spotify showed "
+            f"({len(queued(st))} visible, read cap {cap if cap is not None else 'unknown'}). "
+            "Snapshot and playlist are kept.")
+        return 1
     if len(keep) != len(st.next_tracks):
         with stage("clear queued"):
             await sp.set_queue(keep)
@@ -280,15 +288,23 @@ async def restore(sp: Any, out: Out, *, name: str | None = None, device: str | N
     with stage("set queue"):
         raw, st = await read_state(sp, need_active=False)
         context_rest = [t for t in st.next_tracks if t.provider != "queue"]
-        # Queued items restore cannot requeue (local files) stay where park left them.
-        kept = [t for t in queued(st) if not is_real_track(t.uri)]
-        if want or len(kept) != len(queued(st)):
+        # Never remove a queued song that is not in the snapshot: one live occurrence per saved
+        # song is replaced; the rest (songs queued since the park, local files) stay after them.
+        need = Counter(want)
+        kept = []
+        for t in queued(st):
+            if is_real_track(t.uri) and need[t.uri] > 0:
+                need[t.uri] -= 1
+            else:
+                kept.append(t)
+        if [t.uri for t in queued(st)] != [*want, *(t.uri for t in kept)]:
             await sp.set_queue([*want, *kept, *context_rest])
+    extras = [t.uri for t in kept if is_real_track(t.uri)]
 
     got: list[str] = []
     for _ in range(5):
         raw, st = await read_state(sp, need_active=False)
-        got = [t.uri for t in queued(st) if is_real_track(t.uri)]
+        got = [t.uri for t in queued(st) if is_real_track(t.uri)][: len(want)]
         if got == want:
             break
         await asyncio.sleep(1)
@@ -297,6 +313,8 @@ async def restore(sp: Any, out: Out, *, name: str | None = None, device: str | N
         f"position {pos}ms (saved {snap.position_ms}ms); queued {len(got)}/{len(want)} in order: "
         f"{'yes' if got == want else 'no'}"
         + ("" if context_ok else "; context NOT restored"))
+    if extras:
+        out(f"kept {len(extras)} song(s) queued since the park, after the restored ones: " + ", ".join(extras))
     problems = []
     if got != want:
         problems.append("set queue: queued songs differ from the snapshot")

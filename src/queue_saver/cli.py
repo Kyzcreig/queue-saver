@@ -35,7 +35,7 @@ async def _run(args: argparse.Namespace, out: Callable[[str], None], factory: Ba
 
     def cookie(fresh: bool = False) -> str:
         value = read_sp_dc(fresh=fresh)
-        secret.append(value)  # only so output can be scrubbed of it
+        secret.append(value)  # only so output can be scrubbed of it; secret[-1] is the one in use
         return cookie_header(value)
 
     async def login() -> Any:
@@ -50,10 +50,16 @@ async def _run(args: argparse.Namespace, out: Callable[[str], None], factory: Ba
         cause = e.__cause__ if isinstance(e, ops.StageError) else e
         if not _is_login_failure(cause) or _mutated(backend):
             raise
-        out("login rejected; reseeding the cookie from the browser container and retrying once")
-        if not reseed_from_container():
-            out("reseed did not update the cookie; retrying with a fresh 1Password read")
-        backend = factory(cookie(fresh=True))
+        rejected = secret[-1]
+        header = cookie(fresh=True)
+        if secret[-1] != rejected:  # only the cached read was stale: never overwrite the vault
+            out("login rejected; 1Password holds a newer cookie than the cached one, retrying once with it")
+        else:
+            out("login rejected; reseeding the cookie from the browser container and retrying once")
+            if not reseed_from_container():
+                out("reseed did not update the cookie; retrying with a fresh 1Password read")
+            header = cookie(fresh=True)
+        backend = factory(header)
         async with backend as sp:
             return await _dispatch(args, sp, out, version)
 

@@ -262,7 +262,7 @@ def test_login_failure_reseeds_from_container_and_retries_once(monkeypatch):
     lines = []
     rc = cli.main(["probe"], factory=factory, out=lines.append)
     assert rc == 3  # second attempt reached the account (nothing active)
-    assert calls == {"reseed": 1, "fresh": [False, True], "built": 2}
+    assert calls == {"reseed": 1, "fresh": [False, True, True], "built": 2}
 
 
 # ---------------------------------------------------------------- review-fix round (PR #1)
@@ -338,7 +338,7 @@ def test_restore_of_a_paused_snapshot_leaves_it_paused(state_dir):
     assert fb.state.is_playing is False and fb.state.is_paused is True
 
 
-def test_restore_of_an_empty_queue_clears_songs_that_survive_play(state_dir):
+def test_restore_of_an_empty_queue_keeps_songs_queued_since_the_park(state_dir):
     c = load_cluster("playing.json")
     c["player_state"]["next_tracks"] = [t for t in c["player_state"]["next_tracks"] if t["provider"] != "queue"]
     assert run(["park"], FakeBackend(c))[0] == 0
@@ -352,7 +352,8 @@ def test_restore_of_an_empty_queue_clears_songs_that_survive_play(state_dir):
     fb = KeepsQueue(load_cluster("playing.json"), contexts={CTX: [T(0), T(1), T(2), T(3), T(4)]})
     rc, out, _ = run(["restore"], fb)
     assert rc == 0, out
-    assert [t for t in fb.state.next_tracks if t.provider == "queue"] == []
+    assert [t.uri for t in fb.state.next_tracks if t.provider == "queue"] == [T(101), T(102), T(103)]
+    assert "kept 3 song(s) queued since the park" in out
 
 
 def test_restore_fails_when_the_seek_did_not_take_effect():
@@ -623,3 +624,58 @@ def test_write_snapshot_never_shows_an_incomplete_snapshot(state_dir, monkeypatc
     with pytest.raises(OSError):
         state.write_snapshot(snapshot_from_cluster(load_cluster("playing.json"), "2.1.0"))
     assert [p.name for p in state.list_snapshots()] == [path.name]
+
+
+# ---------------------------------------------------------------- review-fix round 3 (PR #1)
+@pytest.mark.parametrize("cap", [25, None])
+def test_park_never_clears_a_queue_that_may_be_longer_than_shown(state_dir, cap):
+    queue = [{"uri": T(200 + i), "uid": f"q{i}", "provider": "queue"} for i in range(26)]
+    fb = FakeBackend(_cluster_with_queue(*queue), queue_cap=cap)
+    rc, out, _ = run(["park", "--queued-only"], fb)
+    assert rc == 1, out
+    assert "may be longer than what Spotify showed" in out
+    assert "set_queue" not in fb.log
+    assert [t["uid"] for t in fb.ps["next_tracks"] if t["provider"] == "queue"] == [t["uid"] for t in queue]
+    (pl,) = fb.playlists.values()
+    assert len(pl) == (25 if cap else 26) and snapshots(state_dir)
+
+
+def test_restore_puts_saved_songs_first_and_keeps_songs_queued_since_the_park():
+    fb = _parked_then_elsewhere()
+    fb = KeepsQueue(fb.cluster, contexts=fb.contexts)
+    asyncio.run(fb.add_to_queue(T(500)))
+    rc, out, _ = run(["restore"], fb)
+    assert rc == 0, out
+    assert [t.uri for t in fb.state.next_tracks if t.provider == "queue"] == [T(101), T(102), T(103), T(500)]
+    assert "in order: yes" in out and f"kept 1 song(s) queued since the park, after the restored ones: {T(500)}" in out
+
+
+def _rejected_then(monkeypatch, fresh_value):
+    from spotapi.types.exceptions import HTTPError
+
+    calls = {"reseed": 0, "fresh": [], "headers": []}
+    monkeypatch.setattr(cli, "reseed_from_container", lambda: calls.__setitem__("reseed", calls["reseed"] + 1) or True)
+    monkeypatch.setattr(cli, "read_sp_dc", lambda fresh=False: calls["fresh"].append(fresh) or (fresh_value if fresh else FAKE_COOKIE))
+
+    def factory(header):
+        calls["headers"].append(header)
+        if len(calls["headers"]) == 1:
+            return FakeBackend(load_cluster("no_active.json"), error=HTTPError("401", status_code=401))
+        return FakeBackend(load_cluster("no_active.json"))
+
+    rc = cli.main(["probe"], factory=factory, out=[].append)
+    return rc, calls
+
+
+def test_login_rejection_retries_a_newer_vault_value_without_reseeding(monkeypatch):
+    newer = FAKE_COOKIE[::-1]
+    rc, calls = _rejected_then(monkeypatch, newer)
+    assert rc == 3
+    assert calls["reseed"] == 0 and calls["fresh"] == [False, True]
+    assert calls["headers"][1] == cli.cookie_header(newer)
+
+
+def test_login_rejection_reseeds_only_when_the_fresh_value_is_the_rejected_one(monkeypatch):
+    rc, calls = _rejected_then(monkeypatch, FAKE_COOKIE)
+    assert rc == 3
+    assert calls["reseed"] == 1 and calls["fresh"] == [False, True, True]
