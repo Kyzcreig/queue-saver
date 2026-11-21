@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -115,24 +117,44 @@ def snapshot_dir() -> Path:
 def write_snapshot(snap: Snapshot, path: Path | None = None) -> Path:
     d = snapshot_dir()
     d.mkdir(parents=True, exist_ok=True)
+    reserved = path is None
     if path is None:
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        path = d / f"{stamp}.json"
-        n = 1
-        while path.exists():
-            path = d / f"{stamp}-{n}.json"
-            n += 1
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(snap.to_json())
-    os.replace(tmp, path)
+        n = 0
+        while True:  # O_EXCL reserves the name, so two parks in one second never share a file
+            path = d / (f"{stamp}.json" if n == 0 else f"{stamp}-{n}.json")
+            try:
+                os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+                break
+            except FileExistsError:
+                n += 1
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=path.stem + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(snap.to_json())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        if reserved:
+            path.unlink(missing_ok=True)
+        raise
     return path
+
+
+_NAME = re.compile(r"^(\d{8}-\d{6})(?:-(\d+))?$")
+
+
+def _order(p: Path) -> tuple[str, int]:
+    """Oldest first: by timestamp, then by the same-second suffix (none, -1, -2, ..., -10)."""
+    m = _NAME.match(p.stem)
+    return (m.group(1), int(m.group(2) or 0)) if m else (p.stem, -1)
 
 
 def list_snapshots() -> list[Path]:
     d = snapshot_dir()
     if not d.exists():
         return []
-    return sorted(d.glob("*.json"))
+    return sorted(d.glob("*.json"), key=_order)
 
 
 def load_snapshot(name: str | None) -> tuple[Path, Snapshot]:

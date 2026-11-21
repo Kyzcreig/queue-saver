@@ -33,6 +33,7 @@ class FakeBackend:
         self.private: set[str] = set()
         self.selected: str | None = None
         self._uid = itertools.count(1000)
+        self._playlist_ids = itertools.count(0)
 
     async def __aenter__(self) -> "FakeBackend":
         if self.error:
@@ -101,10 +102,16 @@ class FakeBackend:
         self.ps["track"] = {"uri": cur, "uid": f"u{next(self._uid)}", "provider": "context"}
         self.ps["context_uri"] = uri
         self.ps["position_as_of_timestamp"] = position_ms
+        self.ps.setdefault("duration", 240000)  # a loaded song has a length; position clamps to it
         self.ps["is_paused"] = False
         self.ps["is_playing"] = True
         self.ps["next_tracks"] = [{"uri": u, "uid": f"u{next(self._uid)}", "provider": "context"}
                                   for u in items[start + 1:]]
+
+    async def pause(self) -> None:
+        self.log.append("pause")
+        self.ps["is_paused"] = True
+        self.ps["is_playing"] = False
 
     async def seek(self, position_ms: int) -> None:
         self.log.append("seek")
@@ -122,7 +129,7 @@ class FakeBackend:
 
     async def create_playlist(self, name: str) -> str:
         self.log.append("create_playlist")
-        uri = f"spotify:playlist:fake{len(self.playlists)}"
+        uri = f"spotify:playlist:fake{next(self._playlist_ids)}"
         self.playlists[uri] = []
         return uri
 

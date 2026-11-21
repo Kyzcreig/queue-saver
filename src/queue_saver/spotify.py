@@ -98,6 +98,10 @@ class SpotifyBackend:
         self.log.append("play")
         await self.player.play(uri, track=track, position_ms=position_ms)
 
+    async def pause(self) -> None:
+        self.log.append("pause")
+        await self.player.pause()
+
     async def seek(self, position_ms: int) -> None:
         self.log.append("seek")
         await self.player.seek(position_ms)

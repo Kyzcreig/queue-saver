@@ -101,16 +101,22 @@ async def probe(sp: Any, out: Out, *, seed: int = 0) -> int:
     if not pool:
         raise StageError("seed", StateError("no track URIs available to seed with"))
     need = max(0, seed - len(start))
-    added = 0
+    added: list[str] = []
     with stage("seed: add_to_queue"):
         for i in range(need):
             await sp.add_to_queue(pool[i % len(pool)])
-            added += 1
+            added.append(pool[i % len(pool)])
     raw, st = await read_state(sp)
     visible = len(queued(st))
     start_uids = {uid for _, uid in start}
     mine = [t for t in queued(st) if t.uid not in start_uids]
-    out(f"queued visible after seeding: {visible} (added {added}, identified {len(mine)} by uid)")
+    out(f"queued visible after seeding: {visible} (added {len(added)}, identified {len(mine)} by uid)")
+    if Counter(t.uri for t in mine) - Counter(added):
+        # Something not added by this probe appeared: another client changed the queue. The new
+        # uids cannot be told apart, so remove none of them.
+        raise StageError("seed: remove added", StateError(
+            f"{len(mine)} new queued items but this probe added {len(added)}; another client "
+            "changed the queue, so nothing was removed"))
 
     with stage("seed: remove added"):
         if mine:
@@ -124,7 +130,7 @@ async def probe(sp: Any, out: Out, *, seed: int = 0) -> int:
             break
         await asyncio.sleep(1)
     ok = visible >= seed
-    out(f"seeded {len(start) + added}, visible {'>=' if ok else '<'}{seed} ({visible}), "
+    out(f"seeded {len(start) + len(added)}, visible {'>=' if ok else '<'}{seed} ({visible}), "
         f"restored: {'yes' if restored else 'no'}")
     return 0 if (ok and restored) else 1
 
@@ -172,8 +178,10 @@ async def park(sp: Any, out: Out, *, version: str, queued_only: bool = False,
             raise StateError(f"playlist holds {len(got)} items, expected {len(uris)}; queue left as is")
     out(f"playlist: {pl_url} ({len(got)} tracks)")
 
-    # Only now remove queued songs, and only the occurrences that are in the snapshot.
-    parked_uids = {i.uid for i in snap.queued if i.uid}
+    # Only now remove queued songs, and only the occurrences that are in the snapshot and that
+    # restore can requeue (local files cannot be: leave them in place).
+    parked_uids = {i.uid for i in snap.queued if i.uid and is_real_track(i.uri)}
+    unparked = [i for i in snap.queued if not is_real_track(i.uri)]
     raw, st = await read_state(sp)
     keep = [t for t in st.next_tracks if not (t.provider == "queue" and t.uid in parked_uids)]
     if len(keep) != len(st.next_tracks):
@@ -184,7 +192,10 @@ async def park(sp: Any, out: Out, *, version: str, queued_only: bool = False,
     out(f"parked {len(snap.queued)} queued + {len(snap.upcoming) - len(snap.queued)} context; "
         f"queued visible now: {len(queued(st))} (parked ones left: {len(left)})")
     out(f"current: {st.track.uri if st.track else '-'} (was {snap.track.uri})")
-    return 0 if not left else 1
+    if unparked:
+        out(f"clear queued: left {len(unparked)} queued item(s) in the queue that restore cannot "
+            "requeue: " + ", ".join(i.uri for i in unparked))
+    return 0 if not left and not unparked else 1
 
 
 # ---------------------------------------------------------------------------- restore
@@ -208,9 +219,15 @@ async def restore(sp: Any, out: Out, *, name: str | None = None, device: str | N
             for line in device_lines(sp):
                 out(line)
             return 3
+        if len(match) > 1:
+            out(f"{len(match)} devices are named {device!r}; not guessing. matches:")
+            for d in match:
+                out(f"  {d.name} [{d.type}] id={d.id}{' (active)' if d.is_active else ''}")
+            return 3
         sp.select(match[0].id)
 
     context_ok = True
+    started = time.monotonic()
     with stage("play saved song"):
         try:
             if snap.context_uri and not snap.context_uri.startswith("spotify:track:"):
@@ -231,6 +248,9 @@ async def restore(sp: Any, out: Out, *, name: str | None = None, device: str | N
         await asyncio.sleep(1)
     if not st or not st.track or st.track.uri != snap.track.uri:
         raise StageError("play saved song", StateError("player did not load the saved song"))
+    if not snap.is_playing:
+        with stage("pause"):
+            await sp.pause()
     if abs(st.position_ms - snap.position_ms) > position_tolerance_ms:
         with stage("seek"):
             await sp.seek(snap.position_ms)
@@ -245,7 +265,7 @@ async def restore(sp: Any, out: Out, *, name: str | None = None, device: str | N
     with stage("set queue"):
         raw, st = await read_state(sp, need_active=False)
         context_rest = [t for t in st.next_tracks if t.provider != "queue"]
-        if want:
+        if want or queued(st):
             await sp.set_queue([*want, *context_rest])
 
     got: list[str] = []
@@ -260,7 +280,21 @@ async def restore(sp: Any, out: Out, *, name: str | None = None, device: str | N
         f"position {pos}ms (saved {snap.position_ms}ms); queued {len(got)}/{len(want)} in order: "
         f"{'yes' if got == want else 'no'}"
         + ("" if context_ok else "; context NOT restored"))
-    return 0 if got == want else 1
+    problems = []
+    if got != want:
+        problems.append("set queue: queued songs differ from the snapshot")
+    if not st or not st.track or st.track.uri != snap.track.uri:
+        problems.append("play saved song: a different song is loaded")
+    else:
+        drift = int((time.monotonic() - started) * 1000) if snap.is_playing else 0
+        if not snap.position_ms - position_tolerance_ms <= pos <= snap.position_ms + position_tolerance_ms + drift:
+            problems.append(f"seek: position {pos}ms, saved {snap.position_ms}ms")
+        if st.is_playing != snap.is_playing:
+            problems.append(f"{'play' if snap.is_playing else 'pause'}: playing={st.is_playing}, "
+                            f"saved playing={snap.is_playing}")
+    if problems:
+        out("restore incomplete: " + "; ".join(problems))
+    return 0 if not problems else 1
 
 
 # ---------------------------------------------------------------------------- list

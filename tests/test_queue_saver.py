@@ -263,3 +263,278 @@ def test_login_failure_reseeds_from_container_and_retries_once(monkeypatch):
     rc = cli.main(["probe"], factory=factory, out=lines.append)
     assert rc == 3  # second attempt reached the account (nothing active)
     assert calls == {"reseed": 1, "fresh": [False, True], "built": 2}
+
+
+# ---------------------------------------------------------------- review-fix round (PR #1)
+def _cluster_with_queue(*queued):
+    c = load_cluster("playing.json")
+    nt = c["player_state"]["next_tracks"]
+    c["player_state"]["next_tracks"] = [*queued, *[t for t in nt if t["provider"] != "queue"]]
+    return c
+
+
+def test_probe_seed_does_not_remove_a_song_another_client_queued():
+    class Racing(FakeBackend):  # another client queues a song right after the probe's first add
+        async def add_to_queue(self, uri):
+            await super().add_to_queue(uri)
+            if self.log.count("add_to_queue") == 1:
+                self.ps["next_tracks"].insert(0, {"uri": T(777), "uid": "foreign", "provider": "queue"})
+
+    fb = Racing(load_cluster("playing.json"))
+    rc, out, _ = run(["probe", "--seed", "4"], fb)
+    assert rc == 2 and "seed: remove added failed" in out, out
+    assert "set_queue" not in fb.log
+    assert "foreign" in [t.uid for t in fb.state.next_tracks]
+
+
+def test_write_snapshot_reserves_a_unique_name_when_two_parks_race(monkeypatch):
+    from queue_saver import state
+
+    monkeypatch.setattr(state.time, "strftime", lambda fmt, *a: "20261120-120000")
+    real_exists = Path.exists
+    # Both writers pass the existence check before either has written.
+    monkeypatch.setattr(Path, "exists", lambda p: False if p.suffix == ".json" else real_exists(p))
+    a = snapshot_from_cluster(load_cluster("playing.json"), "2.1.0")
+    b = snapshot_from_cluster(load_cluster("playing.json"), "2.1.0")
+    b.track.uri = T(2)
+    pa, pb = state.write_snapshot(a), state.write_snapshot(b)
+    assert pa != pb
+    assert Snapshot.from_json(pa.read_text()).track.uri == T(1)
+    assert Snapshot.from_json(pb.read_text()).track.uri == T(2)
+
+
+def test_bare_restore_loads_the_latest_same_second_snapshot(state_dir):
+    from queue_saver import state
+
+    d = state_dir / "snapshots"
+    d.mkdir(parents=True)
+    snap = snapshot_from_cluster(load_cluster("playing.json"), "2.1.0")
+    for name, uri in (("20261120-120000", T(1)), ("20261120-120000-1", T(2)),
+                      ("20261120-120000-2", T(3)), ("20261120-120000-10", T(4))):
+        snap.track.uri = uri
+        (d / f"{name}.json").write_text(snap.to_json())
+    path, got = state.load_snapshot(None)
+    assert path.name == "20261120-120000-10.json" and got.track.uri == T(4)
+
+
+def test_park_leaves_queued_local_files_it_cannot_restore():
+    local = {"uri": "spotify:local:Artist:Album:Song:180", "uid": "uidlocal", "provider": "queue"}
+    fb = FakeBackend(_cluster_with_queue(
+        {"uri": T(101), "uid": "uid101q", "provider": "queue"}, local))
+    rc, out, _ = run(["park"], fb)
+    assert rc == 1, out
+    assert "cannot requeue" in out and "spotify:local:" in out
+    queued_now = [(t.uri, t.uid) for t in fb.state.next_tracks if t.provider == "queue"]
+    assert queued_now == [(local["uri"], "uidlocal")]
+
+
+def test_restore_of_a_paused_snapshot_leaves_it_paused(state_dir):
+    c = load_cluster("playing.json")
+    c["player_state"]["is_playing"], c["player_state"]["is_paused"] = False, True
+    assert run(["park"], FakeBackend(c))[0] == 0
+    fb = FakeBackend(load_cluster("playing.json"), contexts={CTX: [T(0), T(1), T(2), T(3), T(4)]})
+    rc, out, _ = run(["restore"], fb)
+    assert rc == 0, out
+    assert fb.state.is_playing is False and fb.state.is_paused is True
+
+
+def test_restore_of_an_empty_queue_clears_songs_that_survive_play(state_dir):
+    c = load_cluster("playing.json")
+    c["player_state"]["next_tracks"] = [t for t in c["player_state"]["next_tracks"] if t["provider"] != "queue"]
+    assert run(["park"], FakeBackend(c))[0] == 0
+
+    class KeepsQueue(FakeBackend):  # Spotify keeps manually queued songs across play()
+        async def play(self, uri, *, track, position_ms):
+            kept = [t for t in self.ps["next_tracks"] if t.get("provider") == "queue"]
+            await super().play(uri, track=track, position_ms=position_ms)
+            self.ps["next_tracks"][:0] = kept
+
+    fb = KeepsQueue(load_cluster("playing.json"), contexts={CTX: [T(0), T(1), T(2), T(3), T(4)]})
+    rc, out, _ = run(["restore"], fb)
+    assert rc == 0, out
+    assert [t for t in fb.state.next_tracks if t.provider == "queue"] == []
+
+
+def test_restore_fails_when_the_seek_did_not_take_effect():
+    class DeafSeek(FakeBackend):  # loads the song at 0 ms and acknowledges seek without moving
+        async def play(self, uri, *, track, position_ms):
+            await super().play(uri, track=track, position_ms=0)
+
+        async def seek(self, position_ms):
+            self.log.append("seek")
+
+    fb = _parked_then_elsewhere()
+    deaf = DeafSeek(fb.cluster, contexts=fb.contexts)
+    rc, out, _ = run(["restore"], deaf)
+    assert rc == 1, out
+    assert "in order: yes" in out and "seek: position 0ms" in out
+
+
+def test_restore_refuses_an_ambiguous_device_name(state_dir):
+    assert run(["park"], FakeBackend(load_cluster("playing.json")))[0] == 0
+    c = load_cluster("no_active.json")
+    c["devices"] = {"dev-a": {"name": "Living Room", "device_type": "SPEAKER"},
+                    "dev-b": {"name": "Living Room", "device_type": "TV"},
+                    "dev-c": {"name": "Living Room", "device_type": "SPEAKER"}}
+    idle = FakeBackend(c, contexts={CTX: [T(1), T(2)]})
+    rc, out, _ = run(["restore", "--device", "Living Room"], idle)
+    assert rc == 3, out
+    assert idle.selected is None and "play" not in idle.log
+    assert all(f"id={i}" in out for i in ("dev-a", "dev-b", "dev-c"))
+
+
+def test_reseed_refuses_when_qs_op_ref_overrides_the_read_item(monkeypatch):
+    calls = []
+    monkeypatch.setattr(session.subprocess, "run", lambda *a, **k: calls.append(a) or subprocess.CompletedProcess(a, 0))
+    monkeypatch.setenv("QS_OP_REF", "op://Test/AlternateSpotify/credential")
+    with pytest.raises(session.CookieError, match="QS_OP_REF"):
+        session.reseed_from_container()
+    assert calls == []
+
+
+def test_reseed_writes_the_item_the_reader_reads(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(session.subprocess, "run",
+                        lambda argv, **k: seen.update(k) or subprocess.CompletedProcess(argv, 0))
+    monkeypatch.delenv("QS_OP_REF", raising=False)
+    monkeypatch.setenv("QS_OP_ITEM", "someOtherItem")
+    monkeypatch.setenv("QS_OP_VAULT", "someOtherVault")
+    assert session.reseed_from_container() is True
+    vault, item = session.DEFAULT_OP_REF.split("/")[2:4]
+    assert seen["env"]["QS_OP_ITEM"] == item and seen["env"]["QS_OP_VAULT"] == vault
+
+
+def _load_reseed_script(monkeypatch, cookies):
+    import importlib.util
+    import json
+    import sys
+    import types
+
+    class WS:
+        def send(self, msg):
+            pass
+
+        def recv(self, timeout=None):
+            return json.dumps({"id": 1, "result": {"cookies": cookies}})
+
+        def close(self):
+            pass
+
+    client = types.ModuleType("websockets.sync.client")
+    client.connect = lambda *a, **k: WS()
+    for name, mod in (("websockets", types.ModuleType("websockets")),
+                      ("websockets.sync", types.ModuleType("websockets.sync")),
+                      ("websockets.sync.client", client)):
+        monkeypatch.setitem(sys.modules, name, mod)
+    path = Path(__file__).resolve().parents[1] / "scripts" / "reseed_sp_dc.py"
+    spec = importlib.util.spec_from_file_location("reseed_sp_dc", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    return mod
+
+
+def _fake_cdp(monkeypatch, mod, hits):
+    import io
+    import json
+
+    def urlopen(req, timeout=None):
+        url = req if isinstance(req, str) else req.full_url
+        hits.append(url)
+        if "/json/new" in url:
+            return io.BytesIO(json.dumps({"id": "TAB1", "webSocketDebuggerUrl": "ws://localhost:1/x"}).encode())
+        return io.BytesIO(b"Target is closing")
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", urlopen)
+
+
+def test_reseed_closes_the_tab_it_opened(monkeypatch):
+    mod = _load_reseed_script(monkeypatch, [{"name": "sp_dc", "value": FAKE_COOKIE}])
+    hits = []
+    _fake_cdp(monkeypatch, mod, hits)
+    assert mod.read_cookie("9222") == FAKE_COOKIE
+    assert any(h.endswith("/json/close/TAB1") for h in hits), hits
+
+
+def test_reseed_edits_only_the_credential_of_the_full_item(monkeypatch, tmp_path):
+    import json
+
+    mod = _load_reseed_script(monkeypatch, [{"name": "sp_dc", "value": FAKE_COOKIE}])
+    _fake_cdp(monkeypatch, mod, [])
+    token = tmp_path / "token"
+    token.write_text("svc")
+    monkeypatch.setattr(mod, "TOKEN_FILE", str(token))
+    monkeypatch.setenv("CDP_PORT", "9222")
+    item = {"id": "x", "title": "Spotify web session sp_dc", "fields": [
+        {"id": "credential", "type": "CONCEALED", "label": "credential", "value": "old"},
+        {"id": "recovery_hint", "type": "STRING", "label": "recovery_hint", "value": "keep me"}]}
+    edits = []
+
+    def fake_run(argv, **k):
+        if argv[:3] == ["op", "item", "get"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(item), "")
+        edits.append(json.loads(k["input"]))
+        assert FAKE_COOKIE not in " ".join(argv)
+        return subprocess.CompletedProcess(argv, 0, "{}", "")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    assert mod.main() == 0
+    (sent,) = edits
+    by_id = {f["id"]: f["value"] for f in sent["fields"]}
+    assert by_id == {"credential": FAKE_COOKIE, "recovery_hint": "keep me"}
+
+
+def test_fake_playlist_ids_never_repeat_after_a_delete():
+    fb = FakeBackend(load_cluster("playing.json"))
+
+    async def go():
+        a = await fb.create_playlist("a")
+        b = await fb.create_playlist("b")
+        await fb.add_tracks(b, [T(5)])
+        await fb.delete_playlist(a)
+        c = await fb.create_playlist("c")
+        return b, c
+
+    b, c = asyncio.run(go())
+    assert c != b and fb.playlists[b] == [T(5)]
+
+
+def _login_retry(monkeypatch, first):
+    calls = {"reseed": 0, "built": 0}
+    monkeypatch.setattr(cli, "reseed_from_container", lambda: calls.__setitem__("reseed", calls["reseed"] + 1) or True)
+    good = FakeBackend(load_cluster("no_active.json"))
+
+    def factory(header):
+        calls["built"] += 1
+        return first if calls["built"] == 1 else good
+
+    return calls, factory
+
+
+def test_login_failure_on_the_first_state_read_is_retried(monkeypatch):
+    from spotapi.types.exceptions import HTTPError
+
+    class Expired(FakeBackend):
+        async def refresh(self):
+            self.log.append("refresh")
+            raise HTTPError("401", status_code=401)
+
+    calls, factory = _login_retry(monkeypatch, Expired(load_cluster("playing.json")))
+    rc = cli.main(["probe"], factory=factory, out=[].append)
+    assert rc == 3 and calls == {"reseed": 1, "built": 2}
+
+
+def test_login_failure_after_a_mutation_is_not_replayed(monkeypatch):
+    from spotapi.types.exceptions import HTTPError
+
+    class ExpiresMidPark(FakeBackend):
+        async def set_private(self, uri):
+            self.log.append("set_private")
+            raise HTTPError("401", status_code=401)
+
+    first = ExpiresMidPark(load_cluster("playing.json"))
+    calls, factory = _login_retry(monkeypatch, first)
+    lines = []
+    rc = cli.main(["park"], factory=factory, out=lines.append)
+    assert rc == 2 and "create playlist failed" in "\n".join(lines)
+    assert calls == {"reseed": 0, "built": 1}

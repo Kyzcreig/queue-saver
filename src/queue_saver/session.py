@@ -71,14 +71,22 @@ RESEED_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "
 def reseed_from_container(timeout: int = 240) -> bool:
     """Read sp_dc from the fleet browser identity over a read lease and update 1Password.
 
-    Never logs in. Returns True when the item was updated.
+    Never logs in. Returns True when the item was updated. Refuses (CookieError) unless the item
+    it would write is exactly the one read_sp_dc reads: the browser identity and the script's
+    target are bound to DEFAULT_OP_REF only.
     """
+    ref = os.environ.get("QS_OP_REF", DEFAULT_OP_REF)
+    if ref != DEFAULT_OP_REF:
+        raise CookieError("login rejected; automatic reseed refused because QS_OP_REF overrides "
+                          "the item it would write; update that item by hand")
+    vault, item = DEFAULT_OP_REF.split("/")[2:4]
+    env = dict(os.environ, QS_OP_VAULT=vault, QS_OP_ITEM=item)
     py = os.environ.get("QS_RESEED_PYTHON", "/opt/homebrew/bin/python3")  # needs websockets
     argv = ["browserctl", "with", IDENTITY, "--class", "read", "--ttl", "300", "--",
             "/usr/bin/python3", FORWARDER, "--", py, os.path.abspath(RESEED_SCRIPT)]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
-                              stdin=subprocess.DEVNULL)
+                              stdin=subprocess.DEVNULL, env=env)
     except (OSError, subprocess.TimeoutExpired):
         return False
     return proc.returncode == 0

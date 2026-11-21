@@ -41,12 +41,14 @@ async def _run(args: argparse.Namespace, out: Callable[[str], None], factory: Ba
     async def login() -> Any:
         return factory(cookie())
 
+    backend = None
     try:
         backend = await login()
         async with backend as sp:
             return await _dispatch(args, sp, out, version)
     except Exception as e:
-        if not _is_login_failure(e):
+        cause = e.__cause__ if isinstance(e, ops.StageError) else e
+        if not _is_login_failure(cause) or _mutated(backend):
             raise
         out("login rejected; reseeding the cookie from the browser container and retrying once")
         if not reseed_from_container():
@@ -56,7 +58,16 @@ async def _run(args: argparse.Namespace, out: Callable[[str], None], factory: Ba
             return await _dispatch(args, sp, out, version)
 
 
-def _is_login_failure(e: BaseException) -> bool:
+# Backend calls that change nothing. Any other logged call may have reached Spotify, so a login
+# failure after it is ambiguous and the command is not replayed.
+READ_ONLY_CALLS = {"refresh", "playlist_uris"}
+
+
+def _mutated(backend: Any) -> bool:
+    return any(name not in READ_ONLY_CALLS for name in getattr(backend, "log", ()))
+
+
+def _is_login_failure(e: BaseException | None) -> bool:
     """spotapi 2.1.0's wheel has no LoginExpired (its docs at 7ec4932 do); use the HTTP status."""
     from spotapi.types.exceptions import HTTPError
 

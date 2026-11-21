@@ -30,17 +30,23 @@ def read_cookie(port: str) -> str:
         return json.loads(urllib.request.urlopen(req, timeout=60).read() or b"{}")
 
     target = http("/json/new?https://open.spotify.com/", "PUT")
-    ws = connect(target["webSocketDebuggerUrl"].replace("localhost", "127.0.0.1"), open_timeout=30)
     try:
-        time.sleep(8)
-        ws.send(json.dumps({"id": 1, "method": "Network.getCookies",
-                            "params": {"urls": ["https://open.spotify.com/"]}}))
-        while True:
-            reply = json.loads(ws.recv(timeout=60))
-            if reply.get("id") == 1:
-                break
-    finally:
-        ws.close()
+        ws = connect(target["webSocketDebuggerUrl"].replace("localhost", "127.0.0.1"), open_timeout=30)
+        try:
+            time.sleep(8)
+            ws.send(json.dumps({"id": 1, "method": "Network.getCookies",
+                                "params": {"urls": ["https://open.spotify.com/"]}}))
+            while True:
+                reply = json.loads(ws.recv(timeout=60))
+                if reply.get("id") == 1:
+                    break
+        finally:
+            ws.close()
+    finally:  # closing the socket only detaches; close the tab this script opened
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/json/close/{target['id']}", timeout=60).read()
+        except OSError:
+            print("reseed: could not close the tab it opened")
     cookies = reply.get("result", {}).get("cookies", [])
     return next((c["value"] for c in cookies if c.get("name") == "sp_dc"), "")
 
@@ -53,7 +59,19 @@ def main() -> int:
     env = dict(os.environ)
     with open(TOKEN_FILE) as fh:
         env[ENV_NAME] = fh.read().strip()
-    template = {"fields": [{"id": "credential", "type": "CONCEALED", "label": "credential", "value": value}]}
+    # A piped template is the whole item (op item edit --help: get the item JSON, edit it, pipe it
+    # back), so start from the full item and change only the credential field's value.
+    got = subprocess.run(["op", "item", "get", ITEM, "--vault", VAULT, "--format", "json"],
+                         capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+    if got.returncode != 0:
+        print(f"reseed: op item get failed rc {got.returncode}")
+        return 1
+    template = json.loads(got.stdout)
+    fields = [f for f in template.get("fields", []) if f.get("id") == "credential"]
+    if len(fields) != 1:
+        print("reseed: item has no single credential field; not editing")
+        return 1
+    fields[0]["value"] = value
     proc = subprocess.run(["op", "item", "edit", ITEM, "--vault", VAULT, "--format", "json"],
                           input=json.dumps(template), capture_output=True, text=True, env=env)
     if proc.returncode != 0:
