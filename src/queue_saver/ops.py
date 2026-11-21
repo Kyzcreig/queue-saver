@@ -178,10 +178,10 @@ async def park(sp: Any, out: Out, *, version: str, queued_only: bool = False,
             raise StateError(f"playlist holds {len(got)} items, expected {len(uris)}; queue left as is")
     out(f"playlist: {pl_url} ({len(got)} tracks)")
 
-    # Only now remove queued songs, and only the occurrences that are in the snapshot and that
-    # restore can requeue (local files cannot be: leave them in place).
+    # Only now remove queued songs, and only the occurrences that are in the snapshot, have a uid
+    # to remove them by, and that restore can requeue (local files cannot be: leave them in place).
     parked_uids = {i.uid for i in snap.queued if i.uid and is_real_track(i.uri)}
-    unparked = [i for i in snap.queued if not is_real_track(i.uri)]
+    unparked = [i for i in snap.queued if i.uid not in parked_uids]
     raw, st = await read_state(sp)
     keep = [t for t in st.next_tracks if not (t.provider == "queue" and t.uid in parked_uids)]
     if len(keep) != len(st.next_tracks):
@@ -193,8 +193,8 @@ async def park(sp: Any, out: Out, *, version: str, queued_only: bool = False,
         f"queued visible now: {len(queued(st))} (parked ones left: {len(left)})")
     out(f"current: {st.track.uri if st.track else '-'} (was {snap.track.uri})")
     if unparked:
-        out(f"clear queued: left {len(unparked)} queued item(s) in the queue that restore cannot "
-            "requeue: " + ", ".join(i.uri for i in unparked))
+        out(f"clear queued: left {len(unparked)} queued item(s) in the queue (no occurrence uid, or "
+            "restore cannot requeue them): " + ", ".join(i.uri for i in unparked))
     return 0 if not left and not unparked else 1
 
 
@@ -227,10 +227,11 @@ async def restore(sp: Any, out: Out, *, name: str | None = None, device: str | N
         sp.select(match[0].id)
 
     context_ok = True
+    use_context = bool(snap.context_uri and not snap.context_uri.startswith("spotify:track:"))
     started = time.monotonic()
     with stage("play saved song"):
         try:
-            if snap.context_uri and not snap.context_uri.startswith("spotify:track:"):
+            if use_context:
                 await sp.play(snap.context_uri, track=snap.track.uri, position_ms=snap.position_ms)
             else:
                 await sp.play(snap.track.uri, track=None, position_ms=snap.position_ms)
@@ -240,17 +241,31 @@ async def restore(sp: Any, out: Out, *, name: str | None = None, device: str | N
                 "restoring the song and the queued songs only")
             await sp.play(snap.track.uri, track=None, position_ms=snap.position_ms)
 
-    st = None
-    for _ in range(10):
-        raw, st = await read_state(sp, need_active=False)
-        if st.track and st.track.uri == snap.track.uri:
-            break
-        await asyncio.sleep(1)
+    async def loaded_saved_song() -> PlayerState | None:
+        st = None
+        for _ in range(10):
+            raw, st = await read_state(sp, need_active=False)
+            if st.track and st.track.uri == snap.track.uri:
+                break
+            await asyncio.sleep(1)
+        return st
+
+    st = await loaded_saved_song()
+    if use_context and context_ok and (not st or not st.track or st.track.uri != snap.track.uri):
+        # The context played but started another song (the saved one was queued by hand and is not
+        # in the context): take the same fallback as a context that cannot be played.
+        context_ok = False
+        out(f"context {snap.context_uri} loaded {st.track.uri if st and st.track else 'nothing'} "
+            "instead of the saved song; restoring the song and the queued songs only")
+        with stage("play saved song"):
+            await sp.play(snap.track.uri, track=None, position_ms=snap.position_ms)
+        st = await loaded_saved_song()
     if not st or not st.track or st.track.uri != snap.track.uri:
         raise StageError("play saved song", StateError("player did not load the saved song"))
     if not snap.is_playing:
         with stage("pause"):
             await sp.pause()
+            raw, st = await read_state(sp, need_active=False)  # position moved until the pause landed
     if abs(st.position_ms - snap.position_ms) > position_tolerance_ms:
         with stage("seek"):
             await sp.seek(snap.position_ms)
@@ -265,13 +280,15 @@ async def restore(sp: Any, out: Out, *, name: str | None = None, device: str | N
     with stage("set queue"):
         raw, st = await read_state(sp, need_active=False)
         context_rest = [t for t in st.next_tracks if t.provider != "queue"]
-        if want or queued(st):
-            await sp.set_queue([*want, *context_rest])
+        # Queued items restore cannot requeue (local files) stay where park left them.
+        kept = [t for t in queued(st) if not is_real_track(t.uri)]
+        if want or len(kept) != len(queued(st)):
+            await sp.set_queue([*want, *kept, *context_rest])
 
     got: list[str] = []
     for _ in range(5):
         raw, st = await read_state(sp, need_active=False)
-        got = [t.uri for t in queued(st)]
+        got = [t.uri for t in queued(st) if is_real_track(t.uri)]
         if got == want:
             break
         await asyncio.sleep(1)

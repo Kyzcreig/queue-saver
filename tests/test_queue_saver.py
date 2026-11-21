@@ -538,3 +538,88 @@ def test_login_failure_after_a_mutation_is_not_replayed(monkeypatch):
     rc = cli.main(["park"], factory=factory, out=lines.append)
     assert rc == 2 and "create playlist failed" in "\n".join(lines)
     assert calls == {"reseed": 0, "built": 1}
+
+
+# ---------------------------------------------------------------- review-fix round 2 (PR #1)
+LOCAL = "spotify:local:Artist:Album:Song:180"
+
+
+class KeepsQueue(FakeBackend):  # Spotify keeps manually queued songs across play()
+    async def play(self, uri, *, track, position_ms):
+        kept = [t for t in self.ps["next_tracks"] if t.get("provider") == "queue"]
+        await super().play(uri, track=track, position_ms=position_ms)
+        self.ps["next_tracks"][:0] = kept
+
+
+def test_restore_keeps_queued_local_files_it_cannot_requeue(state_dir):
+    c = _cluster_with_queue({"uri": LOCAL, "uid": "uidlocal", "provider": "queue"})
+    assert run(["park"], FakeBackend(c))[0] == 1  # the local file stays queued
+    fb = KeepsQueue(load_cluster("playing.json"), contexts={CTX: [T(0), T(1), T(2), T(3), T(4)]})
+    fb.ps["next_tracks"] = [{"uri": LOCAL, "uid": "uidlocal", "provider": "queue"}]
+    rc, out, _ = run(["restore"], fb)
+    assert rc == 0, out
+    assert [(t.uri, t.uid) for t in fb.state.next_tracks if t.provider == "queue"] == [(LOCAL, "uidlocal")]
+
+
+def test_park_reports_a_queued_track_without_uid_as_left_in_place():
+    fb = FakeBackend(_cluster_with_queue(
+        {"uri": T(101), "uid": "uid101q", "provider": "queue"},
+        {"uri": T(102), "uid": "", "provider": "queue"}))
+    rc, out, _ = run(["park", "--queued-only"], fb)
+    assert rc == 1, out
+    assert "left 1 queued item(s)" in out and T(102) in out
+    assert [t.uri for t in fb.state.next_tracks if t.provider == "queue"] == [T(102)]
+
+
+def test_restore_falls_back_to_the_song_when_the_context_loads_another(monkeypatch):
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(ops.asyncio, "sleep", lambda s: real_sleep(0))
+    c = load_cluster("playing.json")
+    ps = c["player_state"]
+    ps["track"] = {"uri": T(101), "uid": "uid101q", "provider": "queue"}
+    ps["next_tracks"] = [t for t in ps["next_tracks"] if t["uri"] != T(101)]
+    fb = FakeBackend(c, contexts={CTX: [T(1), T(2)]})
+    assert run(["park"], fb)[0] == 0
+    rc, out, _ = run(["restore"], fb)
+    assert rc == 0, out
+    assert "context NOT restored" in out
+    st = fb.state
+    assert st.track.uri == T(101)
+    assert [t.uri for t in st.next_tracks if t.provider == "queue"] == [T(102), T(103)]
+
+
+def test_restore_seeks_when_the_position_moves_while_pausing(state_dir):
+    c = load_cluster("playing.json")
+    c["player_state"]["is_playing"], c["player_state"]["is_paused"] = False, True
+    assert run(["park"], FakeBackend(c))[0] == 0
+
+    class LatePause(FakeBackend):  # playback runs on 10 s before the pause takes effect
+        async def pause(self):
+            self.ps["position_as_of_timestamp"] += 10000
+            await super().pause()
+
+    fb = LatePause(load_cluster("playing.json"), contexts={CTX: [T(0), T(1), T(2), T(3), T(4)]})
+    rc, out, _ = run(["restore"], fb)
+    assert rc == 0, out
+    assert "seek" in fb.log
+
+
+def test_write_snapshot_never_shows_an_incomplete_snapshot(state_dir, monkeypatch):
+    from queue_saver import state
+
+    snap = snapshot_from_cluster(load_cluster("playing.json"), "2.1.0")
+    seen = []
+    real = snap.to_json
+    snap.to_json = lambda: seen.append([p.stat().st_size for p in state.list_snapshots()]) or real()
+    path = state.write_snapshot(snap)
+    assert seen == [[]], seen
+    assert [p.name for p in state.list_snapshots()] == [path.name]
+    assert not list(path.parent.glob("*.tmp"))
+
+    def boom(*a, **k):
+        raise OSError("no space")
+
+    monkeypatch.setattr(state.tempfile, "mkstemp", boom)
+    with pytest.raises(OSError):
+        state.write_snapshot(snapshot_from_cluster(load_cluster("playing.json"), "2.1.0"))
+    assert [p.name for p in state.list_snapshots()] == [path.name]

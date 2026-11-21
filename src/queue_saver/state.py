@@ -117,28 +117,24 @@ def snapshot_dir() -> Path:
 def write_snapshot(snap: Snapshot, path: Path | None = None) -> Path:
     d = snapshot_dir()
     d.mkdir(parents=True, exist_ok=True)
-    reserved = path is None
-    if path is None:
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        n = 0
-        while True:  # O_EXCL reserves the name, so two parks in one second never share a file
-            path = d / (f"{stamp}.json" if n == 0 else f"{stamp}-{n}.json")
-            try:
-                os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
-                break
-            except FileExistsError:
-                n += 1
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=path.stem + ".", suffix=".tmp")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=(path.stem if path else stamp) + ".", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as fh:
             fh.write(snap.to_json())
-        os.replace(tmp, path)
-    except BaseException:
+        if path is not None:
+            os.replace(tmp, path)
+            return path
+        n = 0
+        while True:  # link fails if the name exists, so only a complete file ever gets a free name
+            path = d / (f"{stamp}.json" if n == 0 else f"{stamp}-{n}.json")
+            try:
+                os.link(tmp, path)
+                return path
+            except FileExistsError:
+                n += 1
+    finally:
         Path(tmp).unlink(missing_ok=True)
-        if reserved:
-            path.unlink(missing_ok=True)
-        raise
-    return path
 
 
 _NAME = re.compile(r"^(\d{8}-\d{6})(?:-(\d+))?$")
