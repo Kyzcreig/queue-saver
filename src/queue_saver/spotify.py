@@ -67,6 +67,27 @@ def route_from_controller(player: Any) -> None:
     player.source_device_id = player.controller_id
 
 
+def mark_queued(cluster: Any) -> Any:
+    """Give every user-queued entry ``provider: "queue"`` before spotapi parses the cluster.
+
+    Measured live 2026-11-26 with the owner's iPhone as the active device: of five songs queued
+    from the phone, only the first read ``provider: "queue"``; the others read
+    ``provider: "context"`` with ``metadata.is_queued: "true"`` (uids ``q`` + 16 hex). spotapi 2.1.0
+    keeps only ``provider``, so the tool saw 1 queued song, parked 1 and left 4 in the queue.
+    ``is_queued`` is the flag Spotify itself sets on a queued entry, so it decides.
+    """
+    ps = cluster.get("player_state") if isinstance(cluster, dict) else None
+    if not isinstance(ps, dict):
+        return cluster
+    entries = [ps.get("track"), *(ps.get("next_tracks") or []), *(ps.get("prev_tracks") or [])]
+    for e in entries:
+        if isinstance(e, dict) and e.get("provider") != "queue":
+            md = e.get("metadata")
+            if isinstance(md, dict) and md.get("is_queued") == "true":
+                e["provider"] = "queue"
+    return cluster
+
+
 # Names a park run may log. Anything else (play, seek, next, previous, pause, resume,
 # transfer, volume, add_to_queue) during a park breaks the never-skip invariant.
 PARK_ALLOWED = {
@@ -114,6 +135,7 @@ class SpotifyBackend:
 
         class _RawPlayer(Player):  # keeps the raw cluster so missing fields can be detected
             def _update_cluster(inner, cluster):  # noqa: N805
+                cluster = mark_queued(cluster)
                 if "player_state" in cluster:
                     self.raw = cluster
                 return super()._update_cluster(cluster)
