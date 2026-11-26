@@ -107,6 +107,12 @@ committed. The tool asserts the installed version equals the pin at start.
 ## 8. Risks
 
 - The private state may also cap the upcoming list. Phase 0 measures it before anything is built on it.
+  - MEASURED 2026-11-25 (Mac desktop app): a state read shows at most 80 `next_tracks` entries,
+    queued songs first. `probe --seed 60` showed 60 queued; `--seed 120` showed `queue=80` and no
+    context, and the 81st add landed unseen. `SpotifyBackend.queue_cap = 80`.
+- Connect commands must be sent FROM this tool's own controller id: spotapi 2.1.0 defaults the
+  source to the active device, and Spotify then answers HTTP 200 with an ack_id but never applies
+  the command (measured on the owner's iPhone and on the Mac desktop app, 2026-11-25).
 - `set_queue` is covered upstream by offline tests plus a live add/remove check, not a live full replace. Phase 3's read-back is the proof here.
 - Restore of a shuffled context cannot reproduce the old shuffle order. The queued songs and the current song are exact; the snapshot's playlist holds the old order.
 
