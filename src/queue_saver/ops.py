@@ -17,6 +17,7 @@ from .state import (
     is_real_track,
     list_snapshots,
     load_snapshot,
+    parse_state,
     require_fields,
     snapshot_from_cluster,
     write_snapshot,
@@ -61,7 +62,7 @@ async def read_state(sp: Any, *, need_active: bool = True) -> tuple[dict, Player
     with stage("read state"):
         raw = await sp.refresh()
         require_fields(raw)
-        st = PlayerState.from_cluster(raw)
+        st = parse_state(raw)  # classified copy; ``raw`` itself is never changed
     if need_active and not st.active_device_id:
         raise NoActiveDevice("no active Spotify device")
     return raw, st
@@ -210,10 +211,14 @@ async def park(sp: Any, out: Out, *, version: str, queued_only: bool = False,
             f"({len(queued(st))} visible, read cap {cap if cap is not None else 'unknown'}). "
             "Snapshot and playlist are kept.")
         return 1
+    paused: list[str] = []
     if len(keep) != len(st.next_tracks):
+        was_playing = st.is_playing
         with stage("clear queued"):
             await sp.set_queue(keep)
-    raw, st = await read_state(sp)
+        if was_playing:
+            paused = await watch_playback(sp)
+    raw, st = await read_state(sp, need_active=not paused)
     left = [t for t in queued(st) if t.uid in parked_uids]
     out(f"parked {len(snap.queued)} queued + {len(snap.upcoming) - len(snap.queued)} context; "
         f"queued visible now: {len(queued(st))} (parked ones left: {len(left)})")
@@ -221,7 +226,35 @@ async def park(sp: Any, out: Out, *, version: str, queued_only: bool = False,
     if unparked:
         out(f"clear queued: left {len(unparked)} queued item(s) in the queue (no occurrence uid, or "
             "restore cannot requeue them): " + ", ".join(i.uri for i in unparked))
+    if paused:
+        out("!!! PLAYBACK STOPPED: it was playing before the queue was cleared and read "
+            f"paused after it ({'; '.join(paused)}). park sent no pause; it does not resume "
+            "playback itself. Press play on the device.")
+        return 1
     return 0 if not left and not unparked else 1
+
+
+# Seconds park watches playback after its set_queue, and how often it reads. Tests set them low.
+WATCH_S = 5.0
+WATCH_EVERY_S = 1.0
+
+
+async def watch_playback(sp: Any) -> list[str]:
+    """Read is_playing/is_paused for WATCH_S seconds; one line per read that shows it stopped.
+
+    Report only: never sends play or resume (park must not touch playback).
+    """
+    seen: list[str] = []
+    t0 = time.monotonic()
+    while True:
+        _raw, st = await read_state(sp, need_active=False)
+        if not st.active_device_id or not st.is_playing or st.is_paused:
+            seen.append(f"+{time.monotonic() - t0:.1f}s is_playing={st.is_playing} "
+                        f"is_paused={st.is_paused} pos={st.position_ms}ms "
+                        f"active={'yes' if st.active_device_id else 'no'}")
+        if time.monotonic() - t0 >= WATCH_S:
+            return seen
+        await asyncio.sleep(WATCH_EVERY_S)
 
 
 # ---------------------------------------------------------------------------- restore
