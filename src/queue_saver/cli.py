@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="verb", required=True)
     pr = sub.add_parser("probe", help="show device, context and upcoming counts by provider")
     pr.add_argument("--seed", type=int, default=0, help="queue up to N tracks, count, remove exactly those")
+    pr.add_argument("--keep", action="store_true", help="with --seed: leave the seeded songs queued (self-test)")
     pk = sub.add_parser("park", help="snapshot, copy to a private playlist, remove queued songs")
     pk.add_argument("--queued-only", action="store_true", help="playlist holds only the queued songs")
     pk.add_argument("--name-prefix", default="Queue Saver", help="playlist name prefix")
@@ -84,7 +85,7 @@ def _is_login_failure(e: BaseException | None) -> bool:
 
 async def _dispatch(args: argparse.Namespace, sp: Any, out: Callable[[str], None], version: str) -> int:
     if args.verb == "probe":
-        return await ops.probe(sp, out, seed=args.seed)
+        return await ops.probe(sp, out, seed=args.seed, keep=args.keep)
     if args.verb == "park":
         return await ops.park(sp, out, version=version, queued_only=args.queued_only,
                               name_prefix=args.name_prefix)

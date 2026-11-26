@@ -20,8 +20,9 @@ queue-saver list                      # parked states
   file first, creates a private playlist (current song + everything upcoming, in play order;
   `--queued-only` keeps only songs you queued), reads the playlist back, and only then removes the
   queued songs it saved, in one `set_queue`. `set_queue` replaces the whole queue, so park removes
-  nothing (exit 1, snapshot and playlist kept) unless the visible queue is shorter than a known read
-  cap. The live backend's cap is unknown, so on spotapi 2.1.0 park saves but does not clear.
+  nothing (exit 1, snapshot and playlist kept) unless the visible queue is shorter than the read
+  cap. Measured cap: a state read shows at most 80 upcoming entries, queued songs first, so park
+  clears up to 79 queued songs and refuses at 80 or more.
 - `restore` plays the saved context at the saved song and position on the ACTIVE device, then puts
   the queued songs back in order, first; songs queued since the park stay, after them. With no active device it lists devices and exits 3 unless
   `--device NAME` is given. If the context no longer exists it restores the song and the queued
@@ -39,6 +40,30 @@ fleet's cached 1Password reader (`op-cached-read`), from the AI vault item
 memory: never in the repo, argv, logs, stdout or snapshot files. On a 401 it re-reads 1Password once.
 To reseed after the cookie expires, read `sp_dc` for open.spotify.com from the fleet browser identity
 `id-spotify-kyzcreig` over a read lease and update the item.
+
+## Live self-test (no owner phone)
+
+Test on a device the fleet controls, never on Ace's phone or a house speaker/TV.
+
+1. `uv run queue-saver probe`. If another device (e.g. `iPhone`) is active and `playing=True`, stop:
+   do not transfer, pause or queue on it; re-check every 2 minutes.
+2. Make sure nothing in the house can sound: `osascript -e 'get volume settings'` must say
+   `output muted:true` (or output volume 0).
+3. Start a test device. The container web player (`id-spotify-kyzcreig`) and headless Chrome have no
+   Widevine, so they never appear as a Connect device. Use the Spotify desktop app on the Mac Studio
+   (device name `Mac Studio M3U`, signed in as kyzcreig): `open -g -a Spotify`. If `/Applications/Spotify.app`
+   fails code signing (`log show ... OS_REASON_CODESIGNING`), run a fresh copy from scratch instead:
+   `curl -o Spotify.dmg https://download.scdn.co/SpotifyARM64.dmg`, mount it, `ditto` the app into the
+   scratch dir and `open -g -a <scratch>/Spotify.app`.
+4. Run `probe` again (rule 1), then play any playlist on that device at volume 0:
+   `uv run python scripts/selftest_play.py play "Mac Studio M3U" spotify:playlist:<id>`
+   (it refuses when another device is playing, and refuses speaker/TV/phone names).
+5. `uv run queue-saver probe --seed 30` must end `seeded 30, visible >=30 (30), restored: yes`.
+6. `uv run queue-saver probe --seed 3 --keep` leaves 3 queued songs. `uv run queue-saver park` must
+   print the playlist link and `queued visible now: 0`. Then `uv run queue-saver restore` and
+   `uv run queue-saver probe`: `queue=3`, the same songs in the saved order.
+7. `uv run python scripts/selftest_play.py pause "Mac Studio M3U"`, quit the app, and delete the
+   `Queue Saver <date>` playlists the run created.
 
 ## Setup and tests
 

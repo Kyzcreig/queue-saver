@@ -82,7 +82,7 @@ def describe(st: PlayerState, raw: dict, out: Out) -> None:
 
 
 # ---------------------------------------------------------------------------- probe
-async def probe(sp: Any, out: Out, *, seed: int = 0) -> int:
+async def probe(sp: Any, out: Out, *, seed: int = 0, keep: bool = False) -> int:
     try:
         raw, st = await read_state(sp)
     except NoActiveDevice:
@@ -101,16 +101,32 @@ async def probe(sp: Any, out: Out, *, seed: int = 0) -> int:
     if not pool:
         raise StageError("seed", StateError("no track URIs available to seed with"))
     need = max(0, seed - len(start))
+    cap = getattr(sp, "queue_cap", None)
+    if cap is not None and len(start) + need > cap:
+        # Past the cap an add lands unseen, so it can be neither confirmed nor removed by uid.
+        out(f"note: seeding stops at the read cap ({cap} queued visible), not {seed}")
+        need = max(0, cap - len(start))
     added: list[str] = []
-    with stage("seed: add_to_queue"):
-        for i in range(need):
-            await sp.add_to_queue(pool[i % len(pool)])
-            added.append(pool[i % len(pool)])
+    seed_error: StageError | None = None
+    try:
+        with stage("seed: add_to_queue"):
+            for i in range(need):
+                await sp.add_to_queue(pool[i % len(pool)])
+                added.append(pool[i % len(pool)])
+    except StageError as e:  # still remove the ones that did land, then report
+        seed_error = e
     raw, st = await read_state(sp)
     visible = len(queued(st))
     start_uids = {uid for _, uid in start}
     mine = [t for t in queued(st) if t.uid not in start_uids]
     out(f"queued visible after seeding: {visible} (added {len(added)}, identified {len(mine)} by uid)")
+    if seed_error is not None:
+        out(f"note: {seed_error}; stopped seeding")
+    if keep:
+        out(f"seeded {len(start) + len(added)}, visible {visible}; kept in the queue (--keep)")
+        if seed_error is not None:
+            raise seed_error
+        return 0 if visible >= seed else 1
     if Counter(t.uri for t in mine) - Counter(added):
         # Something not added by this probe appeared: another client changed the queue. The new
         # uids cannot be told apart, so remove none of them.
@@ -132,6 +148,8 @@ async def probe(sp: Any, out: Out, *, seed: int = 0) -> int:
     ok = visible >= seed
     out(f"seeded {len(start) + len(added)}, visible {'>=' if ok else '<'}{seed} ({visible}), "
         f"restored: {'yes' if restored else 'no'}")
+    if seed_error is not None:
+        raise seed_error
     return 0 if (ok and restored) else 1
 
 
