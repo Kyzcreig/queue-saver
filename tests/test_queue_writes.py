@@ -15,6 +15,7 @@ from spotapi.models.playback import Device, PlayerState
 
 from fakes import FakeBackend, load_cluster
 from queue_saver import cli
+from queue_saver.state import parse_state
 from queue_saver.spotify import QueueWriteError, SpotifyBackend, route_from_controller
 
 
@@ -40,7 +41,7 @@ class FakePlayer:
         self.refreshes = 0
         self._pending = None
         self._uid = itertools.count(5000)
-        self.state = PlayerState.from_cluster(self.cluster)
+        self.state = parse_state(self.cluster)
         active = self.cluster["active_device_id"]
         self.devices = tuple(Device(i, d.get("name", ""), d.get("device_type", "SMARTPHONE"), None, True,
                                     i == active) for i, d in self.cluster["devices"].items())
@@ -67,7 +68,7 @@ class FakePlayer:
                                  for e in args["next_tracks"]]
             ps["queue_revision"] = f"rev{next(self._uid)}"
         self.cluster["timestamp"] += 1
-        self.state = PlayerState.from_cluster(self.cluster)
+        self.state = parse_state(self.cluster)
 
     async def refresh(self):
         self.refreshes += 1
@@ -82,6 +83,10 @@ class FakePlayer:
     async def wait_for(self, event, *, timeout=None):
         await asyncio.sleep(0)
         raise TimeoutError
+
+    @property
+    def raw_cluster(self):  # what _RawPlayer keeps: the cluster exactly as the device sent it
+        return self.cluster
 
 
 def backend(player, timeout=0.5):

@@ -38,6 +38,8 @@ measured yet. Phase 0 measures it.
 
 - **Never skip.** The tool never calls next, previous, pause, play or seek during `park`.
   - *Proof:* test asserts the command log of a `park` run contains only reads, playlist writes and one `set_queue`; live check that track URI and playing flag are equal before and after, and position advanced by no more than elapsed time plus 3 s.
+  - The `set_queue` changes nothing but the list: kept entries go back exactly as read from the raw cluster (provider, uid, metadata) and `prev_tracks` unchanged. Classifying phone-queued entries (`metadata.is_queued`) happens on a copy only. *Proof:* `tests/test_park_write_back.py` compares the sent command with the raw cluster.
+  - A device may still stop on its own (2026-11-26 04:32 the owner's iPhone paused right after a park). `park` reads the player for 5 s after the clear and, if it was playing before and reads paused after, prints `!!! PLAYBACK STOPPED` and exits 1. It never sends play or resume.
 - **Never lose a queue.** `park` removes queued songs only after the snapshot file is on disk and the new playlist has been read back with the expected item count.
   - *Proof:* fault-injection test: playlist read-back returns a short count, then the queue is unchanged and the exit code is non-zero.
 - **The login cookie stays out of the repo, the logs, argv and stdout.**

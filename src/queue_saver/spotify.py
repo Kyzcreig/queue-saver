@@ -7,9 +7,12 @@ logic is tested without the network.
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib.metadata
 from contextlib import AsyncExitStack
 from typing import Any, Callable, Mapping, Sequence
+
+from .state import mark_queued  # noqa: F401  (classification only; re-exported for callers)
 
 PINNED_SPOTAPI = "2.1.0"
 
@@ -67,6 +70,43 @@ def route_from_controller(player: Any) -> None:
     player.source_device_id = player.controller_id
 
 
+def _older(cluster: Mapping[str, Any], st: Any) -> bool:
+    try:
+        return st is not None and int(cluster.get("timestamp") or 0) < st.timestamp
+    except (TypeError, ValueError):
+        return False
+
+
+def raw_entry_lookup(entries: Sequence[Any]) -> Callable[[Any], dict[str, Any] | None]:
+    """Find the raw cluster entry (as the device sent it) for a parsed track, by (uri, uid)."""
+    pool: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for e in entries:
+        if isinstance(e, Mapping) and e.get("uri") and e.get("uid"):
+            pool.setdefault((e["uri"], e["uid"]), []).append(e)
+
+    def find(t: Any) -> dict[str, Any] | None:
+        hits = pool.get((getattr(t, "uri", None), getattr(t, "uid", None))) or []
+        return copy.deepcopy(dict(hits.pop(0))) if hits else None
+
+    return find
+
+
+def write_back_entries(raw_ps: Mapping[str, Any], tracks: Sequence[Any]) -> list[dict[str, Any]]:
+    """next_tracks for a set_queue: every kept entry exactly as read from the raw cluster.
+
+    A track that is not in the raw next_tracks (a song to add: a URI string) gets spotapi's
+    queue_entry. Nothing read from the device is re-labelled, re-built or stripped of metadata.
+    """
+    from spotapi.player import queue_entry
+
+    find = raw_entry_lookup(raw_ps.get("next_tracks") or [])
+    out = []
+    for t in tracks:
+        e = None if isinstance(t, str) else find(t)
+        out.append(e if e is not None else queue_entry(t))
+    return out
+
+
 # Names a park run may log. Anything else (play, seek, next, previous, pause, resume,
 # transfer, volume, add_to_queue) during a park breaks the never-skip invariant.
 PARK_ALLOWED = {
@@ -106,17 +146,20 @@ class SpotifyBackend:
         self.log: list[str] = []
         self.player: Any = None
         self.client: Any = None
-        self.raw: Mapping[str, Any] = {}
         self._ph: Any = None
 
     async def __aenter__(self) -> "SpotifyBackend":
         from spotapi import AsyncClient, Player
 
-        class _RawPlayer(Player):  # keeps the raw cluster so missing fields can be detected
+        class _RawPlayer(Player):
+            """Keeps the raw cluster as the device sent it; spotapi parses a classified copy."""
+
+            raw_cluster: Mapping[str, Any] = {}
+
             def _update_cluster(inner, cluster):  # noqa: N805
-                if "player_state" in cluster:
-                    self.raw = cluster
-                return super()._update_cluster(cluster)
+                if "player_state" in cluster and not _older(cluster, inner.state):
+                    inner.raw_cluster = cluster  # same staleness rule as spotapi's own parse
+                return super()._update_cluster(mark_queued(cluster))
 
         client = await AsyncClient.from_cookies(self._cookie)
         self._cookie = ""  # drop our copy; the client owns the session now
@@ -130,6 +173,11 @@ class SpotifyBackend:
         await self._stack.aclose()
 
     # ---- reads -------------------------------------------------------------
+    @property
+    def raw(self) -> Mapping[str, Any]:
+        """The last cluster exactly as Spotify sent it (never re-labelled)."""
+        return getattr(self.player, "raw_cluster", None) or {}
+
     async def refresh(self) -> Mapping[str, Any]:
         self.log.append("refresh")
         await self.player.refresh()
@@ -160,23 +208,30 @@ class SpotifyBackend:
             lambda st: add_landed(before, n, uri, st), what=f"add_to_queue {uri}")
 
     async def set_queue(self, tracks: Sequence[Any]) -> None:
-        """Replace the upcoming list; one retry with a fresh queue_revision (the write is idempotent)."""
-        from spotapi.player import queue_entry
+        """Replace the upcoming list; one retry with a fresh queue_revision (the write is idempotent).
 
+        ``tracks`` are parsed tracks from the current state (kept as they are) and/or URI strings
+        (songs to queue). The command carries the raw entries as the device sent them: same
+        provider, uid and metadata, and prev_tracks unchanged; the only change is the list itself.
+        """
         self.log.append("set_queue")
-        entries = [queue_entry(t) for t in tracks]
-        want = [e["uri"] for e in entries if e.get("provider") == "queue"]
+        want = [t if isinstance(t, str) else t.uri for t in tracks
+                if isinstance(t, str) or t.provider == "queue"]  # the tool's classification
         cur = self._fresh_state()
-        if [t.uri for t in cur.next_tracks] == [e["uri"] for e in entries] and \
-                [t.uri for t in _queued(cur)] == want:
+        if [t.uri for t in cur.next_tracks] == [t if isinstance(t, str) else t.uri for t in tracks] \
+                and [t.uri for t in _queued(cur)] == want:
             return  # already so: sending it would change nothing a read could confirm
         last: QueueWriteError | None = None
         for _attempt in range(2):
             before = self._fresh_state()
-            args: dict[str, Any] = {"next_tracks": entries,
-                                    "prev_tracks": [queue_entry(t) for t in before.prev_tracks]}
-            if before.queue_revision is not None:
-                args["queue_revision"] = before.queue_revision
+            raw_ps = self.raw.get("player_state") or {}
+            args: dict[str, Any] = {
+                "next_tracks": write_back_entries(raw_ps, tracks),
+                "prev_tracks": copy.deepcopy(list(raw_ps.get("prev_tracks") or [])),
+            }
+            rev = raw_ps.get("queue_revision", before.queue_revision)
+            if rev is not None:
+                args["queue_revision"] = rev
             try:
                 await self._write_queue("set_queue", args,
                                         lambda st, b=before: set_queue_landed(b, want, st),

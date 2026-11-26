@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -85,9 +86,42 @@ def device_name(cluster: Mapping[str, Any], device_id: str | None) -> str | None
     return dev.get("name") or None
 
 
+def mark_queued(cluster: Any) -> Any:
+    """A COPY of ``cluster`` in which every user-queued entry reads ``provider: "queue"``.
+
+    Measured live 2026-11-26 with the owner's iPhone as the active device: of five songs queued
+    from the phone, only the first read ``provider: "queue"``; the others read
+    ``provider: "context"`` with ``metadata.is_queued: "true"`` (uids ``q`` + 16 hex). spotapi 2.1.0
+    keeps only ``provider``, so the tool saw 1 queued song, parked 1 and left 4 in the queue.
+    ``is_queued`` is the flag Spotify itself sets on a queued entry, so it decides.
+
+    This only decides how the tool CLASSIFIES entries. The input is never changed: whatever the
+    tool writes back to Spotify is built from the raw cluster exactly as the device sent it
+    (2026-11-26 04:32 a park on the iPhone paused playback while its set_queue carried
+    re-labelled entries; whatever the cause, a write-back must not differ from what was read).
+    """
+    ps = cluster.get("player_state") if isinstance(cluster, Mapping) else None
+    if not isinstance(ps, Mapping):
+        return cluster
+    out = copy.deepcopy(dict(cluster))
+    ps = out["player_state"]
+    entries = [ps.get("track"), *(ps.get("next_tracks") or []), *(ps.get("prev_tracks") or [])]
+    for e in entries:
+        if isinstance(e, dict) and e.get("provider") != "queue":
+            md = e.get("metadata")
+            if isinstance(md, Mapping) and md.get("is_queued") == "true":
+                e["provider"] = "queue"
+    return out
+
+
+def parse_state(cluster: Mapping[str, Any]) -> PlayerState:
+    """The typed state the tool reasons about: spotapi's parse of the classified copy."""
+    return PlayerState.from_cluster(mark_queued(cluster))
+
+
 def snapshot_from_cluster(cluster: Mapping[str, Any], spotapi_version: str) -> Snapshot:
     require_fields(cluster)
-    st = PlayerState.from_cluster(cluster)
+    st = parse_state(cluster)
     if st.track is None or not st.track.uri:
         raise StateError("nothing is loaded on the player")
     return Snapshot(

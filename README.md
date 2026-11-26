@@ -23,6 +23,12 @@ queue-saver list                      # parked states
   nothing (exit 1, snapshot and playlist kept) unless the visible queue is shorter than the read
   cap. Measured cap: a state read shows at most 80 upcoming entries, queued songs first, so park
   clears up to 79 queued songs and refuses at 80 or more.
+- That `set_queue` sends back every kept entry exactly as Spotify sent it (provider, uid, metadata)
+  and the history (`prev_tracks`) unchanged; the only difference is the removed queued songs. Songs
+  queued from a phone (`provider: "context"` + `metadata.is_queued: "true"`) are counted as queued
+  on a copy of the state, never re-labelled in what is written back.
+- After the clear, `park` reads the player for 5 s. If it was playing before and reads paused
+  after, it prints `!!! PLAYBACK STOPPED ...` and exits 1. It never presses play itself.
 - `restore` plays the saved context at the saved song and position on the ACTIVE device, then puts
   the queued songs back in order, first; songs queued since the park stay, after them. With no active device it lists devices and exits 3 unless
   `--device NAME` is given. If the context no longer exists it restores the song and the queued
