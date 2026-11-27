@@ -187,7 +187,25 @@ def list_snapshots() -> list[Path]:
     return sorted(d.glob("*.json"), key=_order)
 
 
+def completed_marker(snapshot: Path) -> Path:
+    """The marker park writes next to a snapshot once its playlist read back complete."""
+    return snapshot.with_suffix(".parked")
+
+
+def mark_completed(snapshot: Path) -> None:
+    completed_marker(snapshot).touch()
+
+
+def is_completed(snapshot: Path) -> bool:
+    return completed_marker(snapshot).exists()
+
+
 def load_snapshot(name: str | None) -> tuple[Path, Snapshot]:
+    """The named snapshot, or by default the newest one from a COMPLETED park.
+
+    A park that failed or is still running before its playlist read-back leaves a snapshot with
+    no marker; a bare restore skips it, so it never replaces the last park that finished.
+    """
     files = list_snapshots()
     if name:
         p = Path(name)
@@ -196,7 +214,10 @@ def load_snapshot(name: str | None) -> tuple[Path, Snapshot]:
     else:
         if not files:
             raise StateError("no parked snapshots")
-        p = files[-1]
+        done = [f for f in files if is_completed(f)]
+        if not done:
+            raise StateError("no parked snapshots from a completed park")
+        p = done[-1]
     if not p.exists():
         raise StateError(f"snapshot not found: {name}")
     return p, Snapshot.from_json(p.read_text())

@@ -17,6 +17,7 @@ from .state import (
     is_real_track,
     list_snapshots,
     load_snapshot,
+    mark_completed,
     parse_state,
     require_fields,
     snapshot_from_cluster,
@@ -195,6 +196,8 @@ async def park(sp: Any, out: Out, *, version: str, queued_only: bool = False,
             await asyncio.sleep(READBACK_BASE_S * (1 + i))
         if got != uris:
             raise StateError(f"playlist holds {len(got)} items, expected {len(uris)}; queue left as is")
+    with stage("snapshot"):
+        mark_completed(path)  # only now may a bare restore pick this snapshot
     out(f"playlist: {pl_url} ({len(got)} tracks)")
 
     # Only now remove queued songs, and only the occurrences that are in the snapshot, have a uid
