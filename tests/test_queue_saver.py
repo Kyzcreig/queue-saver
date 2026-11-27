@@ -313,8 +313,70 @@ def test_bare_restore_loads_the_latest_same_second_snapshot(state_dir):
                       ("20261120-120000-2", T(3)), ("20261120-120000-10", T(4))):
         snap.track.uri = uri
         (d / f"{name}.json").write_text(snap.to_json())
+        state.mark_completed(d / f"{name}.json")
     path, got = state.load_snapshot(None)
     assert path.name == "20261120-120000-10.json" and got.track.uri == T(4)
+
+
+# ---------------------------------------------------------------- restore after a failed park
+def test_completed_park_marks_its_snapshot(state_dir):
+    from queue_saver import state
+
+    rc, out, _ = run(["park"], FakeBackend(load_cluster("playing.json")))
+    assert rc == 0, out
+    (snap,) = snapshots(state_dir)
+    assert state.is_completed(snap)
+
+
+def test_snapshot_dir_and_marker_are_private_under_a_loose_umask(state_dir):
+    """t_58370087 round 3: the snapshot dir is 0700 and the .parked marker 0600 (umask 022)."""
+    import stat
+
+    from queue_saver import state
+
+    (state_dir / "snapshots").mkdir(parents=True, mode=0o755)
+    old = os.umask(0o022)
+    try:
+        rc, out, _ = run(["park"], FakeBackend(load_cluster("playing.json")))
+    finally:
+        os.umask(old)
+    assert rc == 0, out
+    (snap,) = snapshots(state_dir)
+    assert stat.S_IMODE((state_dir / "snapshots").stat().st_mode) == 0o700
+    assert stat.S_IMODE(state.completed_marker(snap).stat().st_mode) == 0o600
+
+
+def test_park_that_fails_before_readback_leaves_no_marker(state_dir):
+    from queue_saver import state
+
+    rc, out, _ = run(["park"], FakeBackend(load_cluster("playing.json"), short_readback=True))
+    assert rc != 0 and "playlist read-back" in out
+    (snap,) = snapshots(state_dir)
+    assert not state.is_completed(snap)
+
+
+def test_restore_after_a_failed_park_uses_the_previous_completed_snapshot(state_dir):
+    from queue_saver import state
+
+    rc, out, _ = run(["park"], FakeBackend(load_cluster("playing.json")))
+    assert rc == 0, out
+    (good,) = snapshots(state_dir)
+    rc, out, _ = run(["park"], FakeBackend(load_cluster("playing.json"), short_readback=True))
+    assert rc != 0
+    newer = [p for p in snapshots(state_dir) if p != good]
+    assert len(newer) == 1 and state.list_snapshots()[-1] == newer[0]  # the failed one is newest
+    path, _snap = state.load_snapshot(None)
+    assert path == good
+    fb = FakeBackend(load_cluster("playing.json"))
+    rc, out, _ = run(["restore"], fb)
+    assert f"restoring {good.name}:" in out
+
+
+def test_restore_with_only_failed_parks_says_there_is_nothing_parked(state_dir):
+    rc, out, _ = run(["park"], FakeBackend(load_cluster("playing.json"), short_readback=True))
+    assert rc != 0
+    rc, out, _ = run(["restore"], FakeBackend(load_cluster("playing.json")))
+    assert rc == 2 and "no parked snapshots" in out
 
 
 def test_park_leaves_queued_local_files_it_cannot_restore():
