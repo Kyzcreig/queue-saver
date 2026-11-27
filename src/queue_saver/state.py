@@ -151,6 +151,7 @@ def snapshot_dir() -> Path:
 def write_snapshot(snap: Snapshot, path: Path | None = None) -> Path:
     d = snapshot_dir()
     d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o700)  # private whatever the caller's umask, and repaired if it already existed
     stamp = time.strftime("%Y%m%d-%H%M%S")
     fd, tmp = tempfile.mkstemp(dir=d, prefix=(path.stem if path else stamp) + ".", suffix=".tmp")
     try:
@@ -193,7 +194,9 @@ def completed_marker(snapshot: Path) -> Path:
 
 
 def mark_completed(snapshot: Path) -> None:
-    completed_marker(snapshot).touch()
+    marker = completed_marker(snapshot)
+    os.close(os.open(marker, os.O_WRONLY | os.O_CREAT, 0o600))
+    os.chmod(marker, 0o600)  # private whatever the caller's umask
 
 
 def is_completed(snapshot: Path) -> bool:

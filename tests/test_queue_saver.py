@@ -328,6 +328,24 @@ def test_completed_park_marks_its_snapshot(state_dir):
     assert state.is_completed(snap)
 
 
+def test_snapshot_dir_and_marker_are_private_under_a_loose_umask(state_dir):
+    """t_58370087 round 3: the snapshot dir is 0700 and the .parked marker 0600 (umask 022)."""
+    import stat
+
+    from queue_saver import state
+
+    (state_dir / "snapshots").mkdir(parents=True, mode=0o755)
+    old = os.umask(0o022)
+    try:
+        rc, out, _ = run(["park"], FakeBackend(load_cluster("playing.json")))
+    finally:
+        os.umask(old)
+    assert rc == 0, out
+    (snap,) = snapshots(state_dir)
+    assert stat.S_IMODE((state_dir / "snapshots").stat().st_mode) == 0o700
+    assert stat.S_IMODE(state.completed_marker(snap).stat().st_mode) == 0o600
+
+
 def test_park_that_fails_before_readback_leaves_no_marker(state_dir):
     from queue_saver import state
 
